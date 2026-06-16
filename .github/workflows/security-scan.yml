@@ -53,6 +53,7 @@ jobs:
 
       - uses: github/codeql-action/upload-sarif@v3
         if: always()
+        continue-on-error: true   # GHAS/code-scanning not yet enabled on this new repo (org task, tracked for S6/S8); the gosec/govulncheck GATE steps below are authoritative
         with:
           sarif_file: kacho-geo/gosec.sarif
           category: gosec
@@ -94,6 +95,7 @@ jobs:
 
       - uses: github/codeql-action/upload-sarif@v3
         if: always()
+        continue-on-error: true   # GHAS/code-scanning not yet enabled on this new repo (org task, tracked for S6/S8); the gosec/govulncheck GATE steps below are authoritative
         with:
           sarif_file: kacho-geo/govulncheck.sarif
           category: govulncheck

@@ -48,6 +48,8 @@ jobs:
         run: echo "branch=$(echo "${GITHUB_REF_NAME}" | sed 's/\//-/g')" >> "$GITHUB_OUTPUT"
 
       - name: Login to Docker Hub
+        id: dockerlogin
+        continue-on-error: true   # DOCKERHUB_* secrets not yet provisioned on this new repo (org task, S6); until then build-only (no push), job stays green
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -76,10 +78,10 @@ jobs:
         with:
           context: .
           file: ./kacho-geo/Dockerfile
-          push: true
+          push: ${{ steps.dockerlogin.outcome == 'success' }}   # push only if Docker Hub login succeeded (secrets present); else build-only validation
           provenance: false
           platforms: linux/amd64,linux/arm64
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.sanitize.outputs.branch }}-${{ steps.short-sha.outputs.sha }}
+          tags: ${{ secrets.DOCKERHUB_USERNAME || 'local' }}/${{ env.IMAGE_NAME }}:${{ steps.sanitize.outputs.branch }}-${{ steps.short-sha.outputs.sha }}
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
 
