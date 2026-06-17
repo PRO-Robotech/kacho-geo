@@ -1,0 +1,36 @@
+name: integration
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+# Integration tests (testcontainers Postgres). HARD gate: a failing or timed-out
+# `go test` fails the job. NO continue-on-error — that was the kacho-iam #139/#142
+# relic that silently hid `--- FAIL` + `panic: test timed out`. The whole module
+# (`./...`) runs WITHOUT -short, so the testcontainers tests in internal/repo run
+# (they self-guard with `if testing.Short()` for the -short unit job).
+
+defaults:
+  run:
+    working-directory: kacho-geo
+
+jobs:
+  integration:
+    name: integration (testcontainers Postgres)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+        with: { path: kacho-geo }
+      - uses: actions/checkout@v6
+        with: { repository: PRO-Robotech/kacho-corelib, ref: main, path: kacho-corelib }
+      - uses: actions/checkout@v6
+        with: { repository: PRO-Robotech/kacho-proto, ref: main, path: kacho-proto }
+      - uses: actions/setup-go@v6
+        with: { go-version-file: kacho-geo/go.mod, cache-dependency-path: kacho-geo/go.sum }
+      - run: go mod download
+      # HARD gate: a failing or timed-out integration test fails the PR.
+      - run: go test ./... -race -count=1 -timeout 1800s

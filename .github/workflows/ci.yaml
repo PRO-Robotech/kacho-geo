@@ -1,0 +1,72 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+# kacho-geo — polyrepo: go.mod has `replace github.com/PRO-Robotech/kacho-{corelib,proto} => ../...`.
+# CI reproduces the local layout: main repo in kacho-geo/, siblings checked out next to it
+# (actions/checkout cannot path outside $GITHUB_WORKSPACE).
+#
+# NOTE (epic kacho-geo S8): until kacho-geo is added to the siblings' bootstrap/checkout,
+# the siblings still pin `ref: main`; kacho-geo builds + tests standalone with the local
+# replace-paths (corelib/proto are leaf deps already on main).
+
+defaults:
+  run:
+    working-directory: kacho-geo
+
+jobs:
+  build-vet-test:
+    name: build + vet + test (unit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with: { path: kacho-geo }
+      - uses: actions/checkout@v6
+        with: { repository: PRO-Robotech/kacho-corelib, ref: main, path: kacho-corelib }
+      - uses: actions/checkout@v6
+        with: { repository: PRO-Robotech/kacho-proto, ref: main, path: kacho-proto }
+      - uses: actions/setup-go@v6
+        with: { go-version-file: kacho-geo/go.mod, cache-dependency-path: kacho-geo/go.sum }
+      - run: go mod download
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -race -short -count=1 -timeout 5m ./...
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with: { path: kacho-geo }
+      - uses: actions/checkout@v6
+        with: { repository: PRO-Robotech/kacho-corelib, ref: main, path: kacho-corelib }
+      - uses: actions/checkout@v6
+        with: { repository: PRO-Robotech/kacho-proto, ref: main, path: kacho-proto }
+      - uses: actions/setup-go@v6
+        with: { go-version-file: kacho-geo/go.mod, cache-dependency-path: kacho-geo/go.sum }
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          working-directory: kacho-geo
+          args: --timeout 5m
+
+  govuln:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with: { path: kacho-geo }
+      - uses: actions/checkout@v6
+        with: { repository: PRO-Robotech/kacho-corelib, ref: main, path: kacho-corelib }
+      - uses: actions/checkout@v6
+        with: { repository: PRO-Robotech/kacho-proto, ref: main, path: kacho-proto }
+      - uses: actions/setup-go@v6
+        with: { go-version-file: kacho-geo/go.mod, cache-dependency-path: kacho-geo/go.sum }
+      - run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+        continue-on-error: true
