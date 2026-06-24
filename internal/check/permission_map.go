@@ -1,0 +1,95 @@
+// Copyright (c) PRO-Robotech
+// SPDX-License-Identifier: BUSL-1.1
+
+package check
+
+import (
+	"github.com/PRO-Robotech/kacho-corelib/authz"
+)
+
+// FGA-скоупинг для kacho-geo: Region/Zone — глобальные cluster-scoped read-only
+// справочники. Публичные Get/List гейтятся viewer-tier на cluster-синглтоне;
+// admin Internal* CRUD — system_admin на том же синглтоне (зеркалит аннотации
+// proto geo.v1: required_relation viewer / system_admin,
+// scope_extractor.object_type=cluster). cluster_kacho_root — ClusterSingletonID
+// из kacho-iam, один на деплой.
+const (
+	objectTypeCluster      = "cluster"
+	clusterSingletonObject = "cluster_kacho_root"
+
+	relationViewer      = "viewer"
+	relationSystemAdmin = "system_admin"
+)
+
+// staticClusterCatalog — extractor, всегда возвращающий (cluster, cluster_kacho_root).
+func staticClusterCatalog() authz.ObjectExtractor {
+	return func(req any) (string, string, error) {
+		return objectTypeCluster, clusterSingletonObject, nil
+	}
+}
+
+// PermissionMap сопоставляет каждый geo-RPC → требуемое relation + object extractor.
+//
+// Публичное чтение (Region/Zone Get/List) → viewer на cluster:cluster_kacho_root.
+// Admin Internal* CRUD → system_admin на cluster:cluster_kacho_root.
+//
+// Permission-строки используют корректный geo.* FQN. Интерсептор сейчас гейтит по
+// Relation; Permission несется ради будущей fine-grained модели и parity с
+// permission_catalog в api-gateway.
+func PermissionMap() authz.RPCMap {
+	return authz.RPCMap{
+		// ---- публичный read-only справочник (viewer floor) ----
+		"/kacho.cloud.geo.v1.RegionService/Get": {
+			Relation:   relationViewer,
+			Extract:    staticClusterCatalog(),
+			Permission: "geo.regions.get",
+		},
+		"/kacho.cloud.geo.v1.RegionService/List": {
+			Relation:   relationViewer,
+			Extract:    staticClusterCatalog(),
+			Permission: "geo.regions.list",
+		},
+		"/kacho.cloud.geo.v1.ZoneService/Get": {
+			Relation:   relationViewer,
+			Extract:    staticClusterCatalog(),
+			Permission: "geo.zones.get",
+		},
+		"/kacho.cloud.geo.v1.ZoneService/List": {
+			Relation:   relationViewer,
+			Extract:    staticClusterCatalog(),
+			Permission: "geo.zones.list",
+		},
+
+		// ---- admin CRUD (Internal*, system_admin) ----
+		"/kacho.cloud.geo.v1.InternalRegionService/Create": {
+			Relation:   relationSystemAdmin,
+			Extract:    staticClusterCatalog(),
+			Permission: "geo.regions.create",
+		},
+		"/kacho.cloud.geo.v1.InternalRegionService/Update": {
+			Relation:   relationSystemAdmin,
+			Extract:    staticClusterCatalog(),
+			Permission: "geo.regions.update",
+		},
+		"/kacho.cloud.geo.v1.InternalRegionService/Delete": {
+			Relation:   relationSystemAdmin,
+			Extract:    staticClusterCatalog(),
+			Permission: "geo.regions.delete",
+		},
+		"/kacho.cloud.geo.v1.InternalZoneService/Create": {
+			Relation:   relationSystemAdmin,
+			Extract:    staticClusterCatalog(),
+			Permission: "geo.zones.create",
+		},
+		"/kacho.cloud.geo.v1.InternalZoneService/Update": {
+			Relation:   relationSystemAdmin,
+			Extract:    staticClusterCatalog(),
+			Permission: "geo.zones.update",
+		},
+		"/kacho.cloud.geo.v1.InternalZoneService/Delete": {
+			Relation:   relationSystemAdmin,
+			Extract:    staticClusterCatalog(),
+			Permission: "geo.zones.delete",
+		},
+	}
+}
