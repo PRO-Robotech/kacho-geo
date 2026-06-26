@@ -13,3 +13,7 @@ coverage-full.out
 .idea/
 .vscode/
 .DS_Store
+
+# Local polyrepo override (not committed — go.mod pins GitHub versions)
+go.work
+go.work.sum

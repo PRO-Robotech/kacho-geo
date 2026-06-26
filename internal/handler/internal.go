@@ -7,14 +7,16 @@
 // на /geo/v1/regions, /geo/v1/zones — НИКОГДА не на внешнем TLS endpoint
 // (только cluster-internal).
 //
-// Catalog-паттерн (осознанное отклонение): эти admin-мутации возвращают ресурс
-// СИНХРОННО (не operation.Operation) — Region/Zone это admin-managed записи
-// reference-каталога с admin-assigned immutable id.
+// Admin-мутации async (стандартная LRO-форма Kachō): handler возвращает
+// operation.Operation (done=false); use-case создает LRO-строку и запускает
+// фоновый worker, клиент поллит OperationService.Get(id) до done. Малформ/пустой
+// id отвергается синхронно (InvalidArgument) ещё до создания операции.
 package handler
 
 import (
 	"context"
 
+	operationpb "github.com/PRO-Robotech/kacho-corelib/proto/gen/go/kacho/cloud/operation"
 	geov1 "github.com/PRO-Robotech/kacho-proto/gen/go/kacho/cloud/geo/v1"
 
 	region "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/region"
@@ -33,30 +35,32 @@ func NewInternalRegionHandler(uc *region.UseCase) *InternalRegionHandler {
 	return &InternalRegionHandler{uc: uc}
 }
 
-// Create создает region (возвращает ресурс синхронно).
-func (h *InternalRegionHandler) Create(ctx context.Context, req *geov1.CreateRegionRequest) (*geov1.Region, error) {
-	r, err := h.uc.Create(ctx, req.GetId(), req.GetName())
+// Create запускает async-создание региона и возвращает Operation (done=false).
+func (h *InternalRegionHandler) Create(ctx context.Context, req *geov1.CreateRegionRequest) (*operationpb.Operation, error) {
+	op, err := h.uc.Create(ctx, req.GetId(), req.GetName())
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return toProtoRegion(r), nil
+	return operationToProto(op), nil
 }
 
-// Update обновляет имя region.
-func (h *InternalRegionHandler) Update(ctx context.Context, req *geov1.UpdateRegionRequest) (*geov1.Region, error) {
-	r, err := h.uc.Update(ctx, req.GetRegionId(), req.GetName())
+// Update запускает async-смену имени региона и возвращает Operation.
+func (h *InternalRegionHandler) Update(ctx context.Context, req *geov1.UpdateRegionRequest) (*operationpb.Operation, error) {
+	op, err := h.uc.Update(ctx, req.GetRegionId(), req.GetName())
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return toProtoRegion(r), nil
+	return operationToProto(op), nil
 }
 
-// Delete удаляет region (блокируется FK RESTRICT, если на него еще ссылаются зоны).
-func (h *InternalRegionHandler) Delete(ctx context.Context, req *geov1.DeleteRegionRequest) (*geov1.DeleteRegionResponse, error) {
-	if err := h.uc.Delete(ctx, req.GetRegionId()); err != nil {
+// Delete запускает async-удаление региона и возвращает Operation. FK RESTRICT
+// (есть зоны) доезжает как Operation.error FailedPrecondition.
+func (h *InternalRegionHandler) Delete(ctx context.Context, req *geov1.DeleteRegionRequest) (*operationpb.Operation, error) {
+	op, err := h.uc.Delete(ctx, req.GetRegionId())
+	if err != nil {
 		return nil, mapErr(err)
 	}
-	return &geov1.DeleteRegionResponse{}, nil
+	return operationToProto(op), nil
 }
 
 // InternalZoneHandler реализует geov1.InternalZoneServiceServer (admin CRUD).
@@ -70,28 +74,29 @@ func NewInternalZoneHandler(uc *zone.UseCase) *InternalZoneHandler {
 	return &InternalZoneHandler{uc: uc}
 }
 
-// Create создает zone (возвращает ресурс синхронно).
-func (h *InternalZoneHandler) Create(ctx context.Context, req *geov1.CreateZoneRequest) (*geov1.Zone, error) {
-	z, err := h.uc.Create(ctx, req.GetId(), req.GetRegionId(), req.GetName(), domain.ZoneStatus(req.GetStatus()))
+// Create запускает async-создание зоны и возвращает Operation (done=false).
+func (h *InternalZoneHandler) Create(ctx context.Context, req *geov1.CreateZoneRequest) (*operationpb.Operation, error) {
+	op, err := h.uc.Create(ctx, req.GetId(), req.GetRegionId(), req.GetName(), domain.ZoneStatus(req.GetStatus()))
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return toProtoZone(z), nil
+	return operationToProto(op), nil
 }
 
-// Update обновляет zone.
-func (h *InternalZoneHandler) Update(ctx context.Context, req *geov1.UpdateZoneRequest) (*geov1.Zone, error) {
-	z, err := h.uc.Update(ctx, req.GetZoneId(), req.GetRegionId(), req.GetName(), domain.ZoneStatus(req.GetStatus()))
+// Update запускает async-смену зоны и возвращает Operation.
+func (h *InternalZoneHandler) Update(ctx context.Context, req *geov1.UpdateZoneRequest) (*operationpb.Operation, error) {
+	op, err := h.uc.Update(ctx, req.GetZoneId(), req.GetRegionId(), req.GetName(), domain.ZoneStatus(req.GetStatus()))
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return toProtoZone(z), nil
+	return operationToProto(op), nil
 }
 
-// Delete удаляет zone.
-func (h *InternalZoneHandler) Delete(ctx context.Context, req *geov1.DeleteZoneRequest) (*geov1.DeleteZoneResponse, error) {
-	if err := h.uc.Delete(ctx, req.GetZoneId()); err != nil {
+// Delete запускает async-удаление зоны и возвращает Operation.
+func (h *InternalZoneHandler) Delete(ctx context.Context, req *geov1.DeleteZoneRequest) (*operationpb.Operation, error) {
+	op, err := h.uc.Delete(ctx, req.GetZoneId())
+	if err != nil {
 		return nil, mapErr(err)
 	}
-	return &geov1.DeleteZoneResponse{}, nil
+	return operationToProto(op), nil
 }

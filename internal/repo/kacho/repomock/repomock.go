@@ -1,12 +1,20 @@
 // Copyright (c) PRO-Robotech
 // SPDX-License-Identifier: BUSL-1.1
 
-// Package repomock — in-memory моки портов region/zone Repo для unit-тестов
-// use-case (без Postgres; иначе adapter протек бы в use-case).
+// Package repomock — in-memory моки портов region/zone Repo и LRO operations.Repo
+// для unit-тестов use-case (без Postgres; иначе adapter протек бы в use-case).
 package repomock
 
 import (
 	"context"
+	"sync"
+	"testing"
+	"time"
+
+	"google.golang.org/genproto/googleapis/rpc/status"
+	"google.golang.org/protobuf/types/known/anypb"
+
+	"github.com/PRO-Robotech/kacho-corelib/operations"
 
 	region "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/region"
 	zone "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/zone"
@@ -84,3 +92,108 @@ func (m *ZoneRepo) Delete(ctx context.Context, id string) error {
 }
 
 var _ zone.Repo = (*ZoneRepo)(nil)
+
+// OpsRepo — потокобезопасный in-memory operations.Repo для unit-тестов async
+// use-case (без Postgres). Worker зовёт Create (sync) → MarkDone/MarkError
+// (async); тест дожидается завершения через AwaitOpDone (поллит Get).
+type OpsRepo struct {
+	mu  sync.Mutex
+	ops map[string]*operations.Operation
+}
+
+// NewOpsRepo создаёт пустой in-memory LRO-репозиторий.
+func NewOpsRepo() *OpsRepo { return &OpsRepo{ops: make(map[string]*operations.Operation)} }
+
+// Create сохраняет новую операцию (done=false).
+func (r *OpsRepo) Create(_ context.Context, op operations.Operation) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := op
+	r.ops[op.ID] = &cp
+	return nil
+}
+
+// CreateWithPrincipal — то же, principal в in-memory моке не различается.
+func (r *OpsRepo) CreateWithPrincipal(ctx context.Context, op operations.Operation, _ operations.Principal) error {
+	return r.Create(ctx, op)
+}
+
+// Get возвращает операцию по id (ErrNotFound если нет).
+func (r *OpsRepo) Get(_ context.Context, id string) (*operations.Operation, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	op, ok := r.ops[id]
+	if !ok {
+		return nil, operations.ErrNotFound
+	}
+	cp := *op
+	return &cp, nil
+}
+
+// List в моке не используется (пустой результат).
+func (r *OpsRepo) List(_ context.Context, _ operations.ListFilter) ([]operations.Operation, string, error) {
+	return nil, "", nil
+}
+
+// MarkDone финализирует операцию с response.
+func (r *OpsRepo) MarkDone(_ context.Context, id string, response *anypb.Any) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	op, ok := r.ops[id]
+	if !ok {
+		return operations.ErrNotFound
+	}
+	op.Done = true
+	op.Response = response
+	op.ModifiedAt = time.Now().UTC()
+	return nil
+}
+
+// MarkError финализирует операцию с ошибкой (google.rpc.Status).
+func (r *OpsRepo) MarkError(_ context.Context, id string, errStatus *status.Status) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	op, ok := r.ops[id]
+	if !ok {
+		return operations.ErrNotFound
+	}
+	op.Done = true
+	op.Error = errStatus
+	op.ModifiedAt = time.Now().UTC()
+	return nil
+}
+
+// Cancel помечает незавершённую операцию отменённой.
+func (r *OpsRepo) Cancel(_ context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	op, ok := r.ops[id]
+	if !ok {
+		return operations.ErrNotFound
+	}
+	if op.Done {
+		return operations.ErrAlreadyDone
+	}
+	op.Done = true
+	op.Error = &status.Status{Code: 1, Message: "operation cancelled"}
+	return nil
+}
+
+var _ operations.Repo = (*OpsRepo)(nil)
+
+// AwaitOpDone детерминированно ждёт Done==true вместо time.Sleep (worker
+// финализирует операцию в отдельной goroutine). Таймаут 2s.
+func AwaitOpDone(t *testing.T, r *OpsRepo, opID string) *operations.Operation {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		op, err := r.Get(context.Background(), opID)
+		if err == nil && op.Done {
+			return op
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("operation %s did not finish within 2s", opID)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}

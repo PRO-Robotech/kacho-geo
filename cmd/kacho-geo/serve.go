@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"google.golang.org/grpc"
 
@@ -19,6 +20,8 @@ import (
 	"github.com/PRO-Robotech/kacho-corelib/grpcclient"
 	"github.com/PRO-Robotech/kacho-corelib/grpcsrv"
 	"github.com/PRO-Robotech/kacho-corelib/observability"
+	"github.com/PRO-Robotech/kacho-corelib/operations"
+	operationpb "github.com/PRO-Robotech/kacho-corelib/proto/gen/go/kacho/cloud/operation"
 
 	geov1 "github.com/PRO-Robotech/kacho-proto/gen/go/kacho/cloud/geo/v1"
 
@@ -54,9 +57,14 @@ func runServe(cfg config.Config) error {
 	}
 	defer pool.Close()
 
+	// ── LRO-стек: общая operations-таблица (corelib) каталога kacho-geo.
+	// Admin-мутации Region/Zone async — UseCase пишет LRO-строку и запускает
+	// фоновый worker; клиент поллит OperationService.Get(id).
+	opsRepo := operations.NewRepo(pool, "kacho_geo")
+
 	// ── use-cases (repo → use-case → handler) ──────────────────────────────
-	regionUC := region.New(pg.NewRegionRepo(pool))
-	zoneUC := zone.New(pg.NewZoneRepo(pool))
+	regionUC := region.New(pg.NewRegionRepo(pool), opsRepo)
+	zoneUC := zone.New(pg.NewZoneRepo(pool), opsRepo)
 
 	// ── authz: per-RPC OpenFGA Check на ОБОИХ листенерах (AuthN+AuthZ везде —
 	// internal :9091 НЕ освобожден). Ребро geo→iam Check дозванивается в
@@ -150,6 +158,12 @@ func runServe(cfg config.Config) error {
 	// Admin CRUD сервисы ТОЛЬКО на cluster-internal :9091 (не на внешнем endpoint).
 	geov1.RegisterInternalRegionServiceServer(internalSrv, handler.NewInternalRegionHandler(regionUC))
 	geov1.RegisterInternalZoneServiceServer(internalSrv, handler.NewInternalZoneHandler(zoneUC))
+	// OperationService (LRO poll) на ОБОИХ листенерах: admin-мутации идут на
+	// internal :9091, и клиент обязан мочь поллить результат через тот же mux;
+	// read-poll допустим и на public :9090. Read-RPC гейтятся authz той же цепочкой.
+	opHandler := handler.NewOperationHandler(opsRepo)
+	operationpb.RegisterOperationServiceServer(grpcSrv, opHandler)
+	operationpb.RegisterOperationServiceServer(internalSrv, opHandler)
 
 	listener, err := net.Listen("tcp", ":"+cfg.GrpcPort)
 	if err != nil {
@@ -172,6 +186,15 @@ func runServe(cfg config.Config) error {
 		<-ctx.Done()
 		internalSrv.GracefulStop()
 		grpcSrv.GracefulStop()
+		// Дренируем in-flight LRO-worker'ы: SIGTERM не должен оставить async-мутацию
+		// done=false навсегда (клиент завис бы в polling). Свежий ctx — request-ctx
+		// уже отменён возвратом Operation клиенту.
+		drainCtx, cancelDrain := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancelDrain()
+		if werr := operations.Wait(drainCtx); werr != nil {
+			logger.Warn("LRO workers did not finish before shutdown timeout",
+				"err", werr, "active", operations.Active())
+		}
 	}()
 
 	go func() {
