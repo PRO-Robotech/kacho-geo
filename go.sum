@@ -6,10 +6,10 @@ github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c h1:udKWzYgxTojEK
 github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c/go.mod h1:xomTg63KZ2rFqZQzSB4Vz2SUXa1BpHTVz9L5PTmPC4E=
 github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
-github.com/PRO-Robotech/kacho-corelib v0.1.1-0.20260618025241-a8dbc86653dc h1:t3jZADVoumuzdUWd7bLCi87dSfde2hMUCJzCJWsuFkU=
-github.com/PRO-Robotech/kacho-corelib v0.1.1-0.20260618025241-a8dbc86653dc/go.mod h1:oQSbiJ3zpfoBA+Ma1sN3FOt6e3OjwzzPFSspoznie4o=
-github.com/PRO-Robotech/kacho-proto v0.1.1-0.20260624203923-05d1904e3797 h1:WmhdjjonEK/j9WUExIq1yTY2P7vEKquQApjGvEnDtv4=
-github.com/PRO-Robotech/kacho-proto v0.1.1-0.20260624203923-05d1904e3797/go.mod h1:eivh1UziyP3E4fqTBzz6687eowDr9zPIqhCeeCofAQ4=
+github.com/PRO-Robotech/kacho-corelib v0.1.1-0.20260627132909-f6782af68bb7 h1:sYzFyrcU080NxLkjdlBJKiE9LNiqZloWrEXcw9DmzaI=
+github.com/PRO-Robotech/kacho-corelib v0.1.1-0.20260627132909-f6782af68bb7/go.mod h1:cZIpVmsfhXJ8dpDHfi5mMYAh/3AeFH8mEA1ZPz+LWTs=
+github.com/PRO-Robotech/kacho-iam v1.0.2-0.20260627095713-09310cc50004 h1:PkBNPp76vzc/MoCE957l5oh5LT8npsDK4MJXG/b5PrY=
+github.com/PRO-Robotech/kacho-iam v1.0.2-0.20260627095713-09310cc50004/go.mod h1:7hjhauLyjEmXiuOvy4DKQ1wz2mjQWHPvbIwbLbnBWkQ=
 github.com/cenkalti/backoff/v4 v4.3.0 h1:MyRJ/UdXutAwSAT+s3wNd7MfTIcy71VQueUuFK343L8=
 github.com/cenkalti/backoff/v4 v4.3.0/go.mod h1:Y3VNntkOUPxTVeUxJ/G5vcM//AlwfmyYozVcomhLiZE=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
@@ -181,8 +181,8 @@ google.golang.org/genproto/googleapis/api v0.0.0-20260427160629-7cedc36a6bc4 h1:
 google.golang.org/genproto/googleapis/api v0.0.0-20260427160629-7cedc36a6bc4/go.mod h1:Q9HWtNeE7tM9npdIsEvqXj1QJIvVoeAV3rtXtS715Cw=
 google.golang.org/genproto/googleapis/rpc v0.0.0-20260427160629-7cedc36a6bc4 h1:tEkOQcXgF6dH1G+MVKZrfpYvozGrzb91k6ha7jireSM=
 google.golang.org/genproto/googleapis/rpc v0.0.0-20260427160629-7cedc36a6bc4/go.mod h1:4Hqkh8ycfw05ld/3BWL7rJOSfebL2Q+DVDeRgYgxUU8=
-google.golang.org/grpc v1.81.0 h1:W3G9N3KQf3BU+YuCtGKJk0CmxQNbAISICD/9AORxLIw=
-google.golang.org/grpc v1.81.0/go.mod h1:xGH9GfzOyMTGIOXBJmXt+BX/V0kcdQbdcuwQ/zNw42I=
+google.golang.org/grpc v1.81.1 h1:VnnIIZ88UzOOKLukQi+ImGz8O1Wdp8nAGGnvOfEIWQQ=
+google.golang.org/grpc v1.81.1/go.mod h1:xGH9GfzOyMTGIOXBJmXt+BX/V0kcdQbdcuwQ/zNw42I=
 google.golang.org/protobuf v1.36.11 h1:fV6ZwhNocDyBLK0dj+fg8ektcVegBBuEolpbTQyBNVE=
 google.golang.org/protobuf v1.36.11/go.mod h1:HTf+CrKn2C3g5S8VImy6tdcUvCska2kB7j23XfzDpco=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
