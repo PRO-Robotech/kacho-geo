@@ -7,7 +7,7 @@ MIGRATOR_BIN   := kacho-migrator
 MIGRATOR_CMD   := ./cmd/migrator
 IMAGE          := kacho-geo:dev
 
-.PHONY: build build-migrator test test-short vet lint docker proto-install-plugins proto-lint proto-gen
+.PHONY: build build-migrator test test-short vet lint docker proto-install-plugins proto-vendor proto-lint proto-gen
 
 build:
 	CGO_ENABLED=0 go build -o bin/$(BINARY) $(CMD)
@@ -40,14 +40,36 @@ proto-install-plugins:
 	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc
 	go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway
 
-proto-lint:
+# proto-vendor — подтягивает corelib-owned инфра-протосы в proto/ для buf-резолва
+# импортов доменного geo. Единственный источник истины — kacho-corelib; локальные
+# копии gitignored и НЕ коммитятся (дубля .proto в git нет). Запускается перед
+# buf lint/generate. WKT google/protobuf/* резолвит сам buf (вендорить не нужно).
+CORELIB_PROTO ?= ../kacho-corelib/proto
+VENDORED_PROTOS := \
+	google/api/annotations.proto \
+	google/api/field_behavior.proto \
+	google/api/http.proto \
+	google/rpc/status.proto \
+	kacho/cloud/api/operation.proto \
+	kacho/cloud/operation/operation.proto \
+	kacho/cloud/validation.proto \
+	kacho/iam/authz/v1/authz_options.proto
+
+proto-vendor:
+	@test -d "$(CORELIB_PROTO)" || { echo "corelib proto не найден: $(CORELIB_PROTO) (переопредели CORELIB_PROTO=...)"; exit 1; }
+	@for f in $(VENDORED_PROTOS); do \
+		mkdir -p "proto/$$(dirname $$f)"; \
+		cp "$(CORELIB_PROTO)/$$f" "proto/$$f"; \
+	done
+
+proto-lint: proto-vendor
 	cd proto && buf lint
 
 # proto-gen — регенерация Go-stubs доменного proto geo (kacho/cloud/geo/v1) из proto/.
 # Универсальная инфра (operation/validation/authz_options/cloud-api/google) вендорится
-# в proto/ только для buf-резолва импортов и НЕ генерируется (Go-stubs живут в
-# kacho-corelib / canonical genproto) — см. proto/buf.gen.yaml inputs.paths.
-proto-gen:
+# таргетом proto-vendor только для buf-резолва импортов и НЕ генерируется (Go-stubs
+# живут в kacho-corelib / canonical genproto) — см. proto/buf.gen.yaml inputs.paths.
+proto-gen: proto-vendor
 	cd proto && buf generate
 
 .PHONY: migrate-up migrate-down migrate-status
