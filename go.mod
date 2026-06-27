@@ -3,7 +3,7 @@ module github.com/PRO-Robotech/kacho-geo
 go 1.25.7
 
 require (
-	github.com/PRO-Robotech/kacho-corelib v0.1.1-0.20260627132909-f6782af68bb7
+	github.com/PRO-Robotech/kacho-corelib v0.2.1
 	github.com/PRO-Robotech/kacho-iam v1.0.2-0.20260627095713-09310cc50004
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0
 	github.com/jackc/pgx/v5 v5.9.2
@@ -71,10 +71,10 @@ require (
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	golang.org/x/crypto v0.52.0 // indirect
-	golang.org/x/net v0.55.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/crypto v0.53.0 // indirect
+	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/sync v0.21.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/text v0.38.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
