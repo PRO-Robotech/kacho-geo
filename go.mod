@@ -2,9 +2,15 @@ module github.com/PRO-Robotech/kacho-geo
 
 go 1.25.7
 
+// Polyrepo sibling: kacho-iam владеет собственным доменным proto
+// (proto/gen/go/kacho/cloud/iam/v1) — geo импортирует stubs IAM-edge (Check)
+// оттуда. Локальная разработка — через replace на соседний модуль (kacho-iam
+// живёт рядом в kacho-workspace/project/).
+replace github.com/PRO-Robotech/kacho-iam => ../kacho-iam
+
 require (
 	github.com/PRO-Robotech/kacho-corelib v0.1.1-0.20260618025241-a8dbc86653dc
-	github.com/PRO-Robotech/kacho-proto v0.1.1-0.20260624203923-05d1904e3797
+	github.com/PRO-Robotech/kacho-iam v0.0.0-00010101000000-000000000000
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/pressly/goose/v3 v3.27.1
 	github.com/stretchr/testify v1.11.1
