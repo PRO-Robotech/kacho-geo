@@ -10,7 +10,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 
-	geov1 "github.com/PRO-Robotech/kacho-proto/gen/go/kacho/cloud/geo/v1"
+	geov1 "github.com/PRO-Robotech/kacho-geo/proto/gen/go/kacho/cloud/geo/v1"
 
 	zone "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/zone"
 	"github.com/PRO-Robotech/kacho-geo/internal/domain"

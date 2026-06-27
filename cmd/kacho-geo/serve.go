@@ -23,7 +23,7 @@ import (
 	"github.com/PRO-Robotech/kacho-corelib/operations"
 	operationpb "github.com/PRO-Robotech/kacho-corelib/proto/gen/go/kacho/cloud/operation"
 
-	geov1 "github.com/PRO-Robotech/kacho-proto/gen/go/kacho/cloud/geo/v1"
+	geov1 "github.com/PRO-Robotech/kacho-geo/proto/gen/go/kacho/cloud/geo/v1"
 
 	region "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/region"
 	zone "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/zone"
