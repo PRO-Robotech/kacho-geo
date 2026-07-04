@@ -26,3 +26,10 @@ go.work.sum
 /proto/kacho/cloud/validation.proto
 /proto/kacho/iam/
 .claude/
+
+# AI-оснастка (источник истины — kacho-workspace, локально синкается) — не коммитим
+.claude/
+CLAUDE.md
+AGENTS.md
+.codex/
+.agents/
