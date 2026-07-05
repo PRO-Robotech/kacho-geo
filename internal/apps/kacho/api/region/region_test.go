@@ -14,12 +14,13 @@ import (
 
 	region "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/region"
 	"github.com/PRO-Robotech/kacho-geo/internal/domain"
+	"github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/shared/serviceerr"
 	geoerrors "github.com/PRO-Robotech/kacho-geo/internal/errors"
 	"github.com/PRO-Robotech/kacho-geo/internal/repo/kacho/repomock"
 )
 
 func TestGet_emptyID_invalidArg(t *testing.T) {
-	uc := region.New(&repomock.RegionRepo{}, repomock.NewOpsRepo())
+	uc := region.New(&repomock.RegionRepo{}, &repomock.RegionRepo{}, repomock.NewOpsRepo(), serviceerr.ToStatus)
 	_, err := uc.Get(context.Background(), "")
 	if !stderrors.Is(err, geoerrors.ErrInvalidArg) {
 		t.Fatalf("Get('') err = %v, want ErrInvalidArg", err)
@@ -32,7 +33,7 @@ func TestGet_happy(t *testing.T) {
 			return &domain.Region{ID: id, Name: "Region 1"}, nil
 		},
 	}
-	uc := region.New(mock, repomock.NewOpsRepo())
+	uc := region.New(mock, mock, repomock.NewOpsRepo(), serviceerr.ToStatus)
 	r, err := uc.Get(context.Background(), "region-1")
 	if err != nil {
 		t.Fatalf("Get err = %v", err)
@@ -44,7 +45,7 @@ func TestGet_happy(t *testing.T) {
 
 // TestCreate_emptyID_invalidArg — пустой id отвергается СИНХРОННО (операция не пишется).
 func TestCreate_emptyID_invalidArg(t *testing.T) {
-	uc := region.New(&repomock.RegionRepo{}, repomock.NewOpsRepo())
+	uc := region.New(&repomock.RegionRepo{}, &repomock.RegionRepo{}, repomock.NewOpsRepo(), serviceerr.ToStatus)
 	_, err := uc.Create(context.Background(), "", "x")
 	if !stderrors.Is(err, geoerrors.ErrInvalidArg) {
 		t.Fatalf("Create('') err = %v, want ErrInvalidArg", err)
@@ -57,7 +58,7 @@ func TestCreate_happy(t *testing.T) {
 	mock := &repomock.RegionRepo{
 		InsertFunc: func(_ context.Context, r *domain.Region) (*domain.Region, error) { return r, nil },
 	}
-	uc := region.New(mock, ops)
+	uc := region.New(mock, mock, ops, serviceerr.ToStatus)
 	op, err := uc.Create(context.Background(), "region-1", "Region 1")
 	if err != nil {
 		t.Fatalf("Create err = %v", err)
@@ -86,7 +87,7 @@ func TestDelete_repoFKViolation_failedPrecondition(t *testing.T) {
 	mock := &repomock.RegionRepo{
 		DeleteFunc: func(_ context.Context, _ string) error { return geoerrors.ErrFailedPrecondition },
 	}
-	uc := region.New(mock, ops)
+	uc := region.New(mock, mock, ops, serviceerr.ToStatus)
 	op, err := uc.Delete(context.Background(), "region-1")
 	if err != nil {
 		t.Fatalf("Delete accept err = %v", err)
@@ -104,7 +105,7 @@ func TestDelete_noZones_ok(t *testing.T) {
 	mock := &repomock.RegionRepo{
 		DeleteFunc: func(_ context.Context, _ string) error { deleted = true; return nil },
 	}
-	uc := region.New(mock, ops)
+	uc := region.New(mock, mock, ops, serviceerr.ToStatus)
 	op, err := uc.Delete(context.Background(), "region-1")
 	if err != nil {
 		t.Fatalf("Delete err = %v", err)
@@ -129,7 +130,7 @@ func TestUpdate_name_passesPointer(t *testing.T) {
 			return &domain.Region{ID: id, Name: "New Name"}, nil
 		},
 	}
-	uc := region.New(mock, ops)
+	uc := region.New(mock, mock, ops, serviceerr.ToStatus)
 	op, err := uc.Update(context.Background(), "region-1", "New Name")
 	if err != nil {
 		t.Fatalf("Update err = %v", err)
@@ -153,7 +154,7 @@ func TestUpdate_emptyName_noChange(t *testing.T) {
 			return &domain.Region{ID: id, Name: "unchanged"}, nil
 		},
 	}
-	uc := region.New(mock, ops)
+	uc := region.New(mock, mock, ops, serviceerr.ToStatus)
 	op, err := uc.Update(context.Background(), "region-1", "")
 	if err != nil {
 		t.Fatalf("Update err = %v", err)
@@ -172,7 +173,7 @@ func TestUpdate_notFound(t *testing.T) {
 			return nil, geoerrors.ErrNotFound
 		},
 	}
-	uc := region.New(mock, ops)
+	uc := region.New(mock, mock, ops, serviceerr.ToStatus)
 	op, err := uc.Update(context.Background(), "no-such-region", "New Name")
 	if err != nil {
 		t.Fatalf("Update accept err = %v", err)
@@ -184,7 +185,7 @@ func TestUpdate_notFound(t *testing.T) {
 }
 
 func TestList_garbagePageSize_invalidArg(t *testing.T) {
-	uc := region.New(&repomock.RegionRepo{}, repomock.NewOpsRepo())
+	uc := region.New(&repomock.RegionRepo{}, &repomock.RegionRepo{}, repomock.NewOpsRepo(), serviceerr.ToStatus)
 	_, _, err := uc.List(context.Background(), region.Pagination{PageSize: 1_000_000})
 	if err == nil {
 		t.Fatal("List(page_size too large) err = nil, want validation error")

@@ -28,6 +28,7 @@ import (
 	region "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/region"
 	zone "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/zone"
 	"github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/config"
+	"github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/shared/serviceerr"
 	"github.com/PRO-Robotech/kacho-geo/internal/check"
 	"github.com/PRO-Robotech/kacho-geo/internal/handler"
 	"github.com/PRO-Robotech/kacho-geo/internal/repo/kacho/pg"
@@ -63,8 +64,15 @@ func runServe(cfg config.Config) error {
 	opsRepo := operations.NewRepo(pool, "kacho_geo")
 
 	// ── use-cases (repo → use-case → handler) ──────────────────────────────
-	regionUC := region.New(pg.NewRegionRepo(pool), opsRepo)
-	zoneUC := zone.New(pg.NewZoneRepo(pool), opsRepo)
+	// CQRS-порты Reader/Writer связываются раздельно (сейчас обе стороны — один
+	// pg-adapter поверх primary-pool; read-side можно позже перецепить на
+	// read-replica pool, не трогая use-case). errStatus — transport-mapper
+	// sentinel→gRPC-status, инжектится из handler-слоя (serviceerr.ToStatus): выбор
+	// кода — transport-concern, use-case его не выбирает.
+	regionRepo := pg.NewRegionRepo(pool)
+	regionUC := region.New(regionRepo, regionRepo, opsRepo, serviceerr.ToStatus)
+	zoneRepo := pg.NewZoneRepo(pool)
+	zoneUC := zone.New(zoneRepo, zoneRepo, opsRepo, serviceerr.ToStatus)
 
 	// ── authz: per-RPC OpenFGA Check на ОБОИХ листенерах (AuthN+AuthZ везде —
 	// internal :9091 НЕ освобожден). Ребро geo→iam Check дозванивается в

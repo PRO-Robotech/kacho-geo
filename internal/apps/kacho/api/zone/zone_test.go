@@ -14,12 +14,13 @@ import (
 
 	zone "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/zone"
 	"github.com/PRO-Robotech/kacho-geo/internal/domain"
+	"github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/shared/serviceerr"
 	geoerrors "github.com/PRO-Robotech/kacho-geo/internal/errors"
 	"github.com/PRO-Robotech/kacho-geo/internal/repo/kacho/repomock"
 )
 
 func TestGet_emptyID_invalidArg(t *testing.T) {
-	uc := zone.New(&repomock.ZoneRepo{}, repomock.NewOpsRepo())
+	uc := zone.New(&repomock.ZoneRepo{}, &repomock.ZoneRepo{}, repomock.NewOpsRepo(), serviceerr.ToStatus)
 	_, err := uc.Get(context.Background(), "")
 	if !stderrors.Is(err, geoerrors.ErrInvalidArg) {
 		t.Fatalf("Get('') err = %v, want ErrInvalidArg", err)
@@ -32,7 +33,7 @@ func TestGet_happy(t *testing.T) {
 			return &domain.Zone{ID: id, RegionID: "region-1", Status: domain.ZoneStatusUp}, nil
 		},
 	}
-	uc := zone.New(mock, repomock.NewOpsRepo())
+	uc := zone.New(mock, mock, repomock.NewOpsRepo(), serviceerr.ToStatus)
 	z, err := uc.Get(context.Background(), "region-1-a")
 	if err != nil {
 		t.Fatalf("Get err = %v", err)
@@ -44,7 +45,7 @@ func TestGet_happy(t *testing.T) {
 
 // TestCreate_emptyRegionID_invalidArg — пустой region_id отвергается синхронно.
 func TestCreate_emptyRegionID_invalidArg(t *testing.T) {
-	uc := zone.New(&repomock.ZoneRepo{}, repomock.NewOpsRepo())
+	uc := zone.New(&repomock.ZoneRepo{}, &repomock.ZoneRepo{}, repomock.NewOpsRepo(), serviceerr.ToStatus)
 	_, err := uc.Create(context.Background(), "region-1-a", "", "x", domain.ZoneStatusUp)
 	if !stderrors.Is(err, geoerrors.ErrInvalidArg) {
 		t.Fatalf("Create(region_id='') err = %v, want ErrInvalidArg", err)
@@ -57,7 +58,7 @@ func TestCreate_happy(t *testing.T) {
 	mock := &repomock.ZoneRepo{
 		InsertFunc: func(_ context.Context, z *domain.Zone) (*domain.Zone, error) { return z, nil },
 	}
-	uc := zone.New(mock, ops)
+	uc := zone.New(mock, mock, ops, serviceerr.ToStatus)
 	op, err := uc.Create(context.Background(), "region-1-a", "region-1", "Region 1 A", domain.ZoneStatusUp)
 	if err != nil {
 		t.Fatalf("Create err = %v", err)
@@ -89,7 +90,7 @@ func TestUpdate_status(t *testing.T) {
 			return &domain.Zone{ID: id, RegionID: "region-1", Status: domain.ZoneStatusDown}, nil
 		},
 	}
-	uc := zone.New(mock, ops)
+	uc := zone.New(mock, mock, ops, serviceerr.ToStatus)
 	op, err := uc.Update(context.Background(), "region-1-a", "", "", domain.ZoneStatusDown)
 	if err != nil {
 		t.Fatalf("Update err = %v", err)
@@ -117,7 +118,7 @@ func TestUpdate_unspecifiedStatus_keepsExisting(t *testing.T) {
 			return &domain.Zone{ID: id, RegionID: "region-1", Name: "new-name", Status: domain.ZoneStatusUp}, nil
 		},
 	}
-	uc := zone.New(mock, ops)
+	uc := zone.New(mock, mock, ops, serviceerr.ToStatus)
 	op, err := uc.Update(context.Background(), "region-1-a", "", "new-name", domain.ZoneStatusUnspecified)
 	if err != nil {
 		t.Fatalf("Update err = %v", err)
@@ -141,7 +142,7 @@ func TestUpdate_invalidStatus_invalidArg(t *testing.T) {
 			return nil, nil
 		},
 	}
-	uc := zone.New(mock, repomock.NewOpsRepo())
+	uc := zone.New(mock, mock, repomock.NewOpsRepo(), serviceerr.ToStatus)
 	_, err := uc.Update(context.Background(), "region-1-a", "", "", domain.ZoneStatus(99))
 	if !stderrors.Is(err, geoerrors.ErrInvalidArg) {
 		t.Fatalf("Update(status=99) err = %v, want ErrInvalidArg", err)
@@ -159,7 +160,7 @@ func TestUpdate_notFound(t *testing.T) {
 			return nil, geoerrors.ErrNotFound
 		},
 	}
-	uc := zone.New(mock, ops)
+	uc := zone.New(mock, mock, ops, serviceerr.ToStatus)
 	op, err := uc.Update(context.Background(), "no-such-zone", "", "new-name", domain.ZoneStatusDown)
 	if err != nil {
 		t.Fatalf("Update accept err = %v", err)
@@ -171,7 +172,7 @@ func TestUpdate_notFound(t *testing.T) {
 }
 
 func TestDelete_emptyID_invalidArg(t *testing.T) {
-	uc := zone.New(&repomock.ZoneRepo{}, repomock.NewOpsRepo())
+	uc := zone.New(&repomock.ZoneRepo{}, &repomock.ZoneRepo{}, repomock.NewOpsRepo(), serviceerr.ToStatus)
 	_, err := uc.Delete(context.Background(), "")
 	if !stderrors.Is(err, geoerrors.ErrInvalidArg) {
 		t.Fatalf("Delete('') err = %v, want ErrInvalidArg", err)
