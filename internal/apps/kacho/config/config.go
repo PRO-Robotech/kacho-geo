@@ -10,7 +10,6 @@ package config
 
 import (
 	"fmt"
-	"os"
 
 	"google.golang.org/grpc"
 
@@ -57,14 +56,16 @@ type Config struct {
 	// единственный — api-gateway SA, SAN spiffe://kacho.cloud/ns/<ns>/sa/kacho-api-gateway).
 	// Принимает comma-separated список. Пусто (default) → любой mTLS-verified peer
 	// доверен как форвардер (паритет с insecure dev back-compat и прочими сервисами).
-	// Задаётся в production для defense-in-depth против confused-deputy: внутренний
-	// сервис со своим валидным client-cert'ом не сможет выдать себя за пользователя и
-	// эскалировать до admin-CRUD Region/Zone на internal-листенере (:9091). На
-	// internal-листенере principal trust-gated через grpcsrv.UnaryCertIdentityExtract +
-	// UnaryTrustedPrincipalExtract(WithTrustedForwarders(...)) — без verified cert'а
-	// (или вне allow-list) forwarded principal снимается → authz видит no-principal →
-	// fail-closed deny. Единственный легитимный форвардер на :9091 — api-gateway
-	// (consumer'ы vpc/compute/nlb валидируют Region/Zone на публичном :9090).
+	// Задаётся в production для defense-in-depth против confused-deputy/principal-
+	// spoofing: внутренний сервис со своим валидным client-cert'ом не сможет выдать
+	// себя за пользователя — ни эскалировать до admin-CRUD Region/Zone на internal-
+	// листенере (:9091), ни подделать viewer-principal на публичном read-endpoint
+	// (:9090). На ОБОИХ листенерах principal trust-gated через
+	// grpcsrv.UnaryCertIdentityExtract + UnaryTrustedPrincipalExtract(
+	// WithTrustedForwarders(...)) — без verified cert'а (или вне allow-list)
+	// forwarded principal снимается → authz видит no-principal → fail-closed deny.
+	// Единственный легитимный форвардер end-user principal'а — api-gateway;
+	// consumer'ы vpc/compute/nlb ходят на публичный :9090 со своим cert'ом.
 	AuthZTrustedForwarderSANs []string `envconfig:"KACHO_GEO_AUTHZ_TRUSTED_FORWARDER_SANS"`
 
 	// ===== per-edge mTLS =====
@@ -127,28 +128,4 @@ func Load() (Config, error) {
 	var c Config
 	err := corecfg.LoadPrefixed(envPrefix, &c)
 	return c, err
-}
-
-// LoadInto — test-хелпер: выставляет переданные env-переменные на время вызова
-// и грузит тем же путем LoadPrefixed, что и Load (по выходу восстанавливает env).
-func LoadInto(c *Config, env map[string]string) error {
-	saved := make(map[string]*string, len(env))
-	for k, v := range env {
-		if prev, ok := os.LookupEnv(k); ok {
-			saved[k] = &prev
-		} else {
-			saved[k] = nil
-		}
-		_ = os.Setenv(k, v)
-	}
-	defer func() {
-		for k, prev := range saved {
-			if prev == nil {
-				_ = os.Unsetenv(k)
-			} else {
-				_ = os.Setenv(k, *prev)
-			}
-		}
-	}()
-	return corecfg.LoadPrefixed(envPrefix, c)
 }
