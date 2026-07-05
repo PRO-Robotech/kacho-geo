@@ -9,10 +9,11 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/anypb"
 
 	"github.com/PRO-Robotech/kacho-corelib/operations"
-	operationpb "github.com/PRO-Robotech/kacho-proto/gen/go/kacho/cloud/operation"
 	geov1 "github.com/PRO-Robotech/kacho-proto/gen/go/kacho/cloud/geo/v1"
+	operationpb "github.com/PRO-Robotech/kacho-proto/gen/go/kacho/cloud/operation"
 
 	"github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/shared/lro"
 	"github.com/PRO-Robotech/kacho-geo/internal/handler"
@@ -109,6 +110,73 @@ func TestOperationHandler_Cancel_owner_ok(t *testing.T) {
 	}
 	if !op.GetDone() {
 		t.Fatalf("owner Cancel: op must be done=true")
+	}
+}
+
+// TestOperationHandler_Cancel_terminalSuccess_FailedPrecondition — владелец A
+// отменяет УЖЕ ЗАВЕРШЁННУЮ УСПЕХОМ (done=true, response set, no error) операцию →
+// FailedPrecondition ("already completed"). Проверяет негативную ветку публичного
+// RPC (rule #12): CancelOwned → ErrAlreadyDone → codes.FailedPrecondition, а
+// терминальное SUCCESS-состояние НЕ перезаписывается на CANCELLED.
+func TestOperationHandler_Cancel_terminalSuccess_FailedPrecondition(t *testing.T) {
+	ops := repomock.NewOpsRepo()
+	opID := seedOwnedOp(t, ops, adminA)
+
+	// Финализируем как SUCCESS (worker.MarkDone) — терминал, не CANCELLED.
+	resp, err := anypb.New(&geov1.Region{Id: "region-1"})
+	if err != nil {
+		t.Fatalf("anypb.New: %v", err)
+	}
+	if err := ops.MarkDone(context.Background(), opID, resp); err != nil {
+		t.Fatalf("MarkDone: %v", err)
+	}
+
+	ctxA := operations.WithPrincipal(context.Background(), adminA)
+	_, err = handler.NewOperationHandler(ops).Cancel(ctxA, &operationpb.CancelOperationRequest{OperationId: opID})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("Cancel on terminal-SUCCESS op: want FAILED_PRECONDITION, got %v", err)
+	}
+
+	// Терминальное состояние не тронуто: остаётся SUCCESS (response set, no error).
+	got, gerr := ops.Get(context.Background(), opID)
+	if gerr != nil {
+		t.Fatalf("Get after failed Cancel: %v", gerr)
+	}
+	if got.Error != nil {
+		t.Fatalf("terminal SUCCESS was overwritten to error — LRO terminal-state integrity breach")
+	}
+	if got.Response == nil {
+		t.Fatalf("terminal SUCCESS response was cleared — integrity breach")
+	}
+}
+
+// TestOperationHandler_Cancel_idempotentReCancel_ok — владелец A отменяет
+// in-flight операцию, затем ПОВТОРНО её отменяет: второй Cancel идемпотентен —
+// возвращает ту же операцию (done=true) без ошибки (CancelOwned распознаёт уже-
+// CANCELLED). Проверяет идемпотентную ветку, ранее не покрытую.
+func TestOperationHandler_Cancel_idempotentReCancel_ok(t *testing.T) {
+	ops := repomock.NewOpsRepo()
+	opID := seedOwnedOp(t, ops, adminA)
+	oh := handler.NewOperationHandler(ops)
+	ctxA := operations.WithPrincipal(context.Background(), adminA)
+
+	first, err := oh.Cancel(ctxA, &operationpb.CancelOperationRequest{OperationId: opID})
+	if err != nil {
+		t.Fatalf("first Cancel err = %v", err)
+	}
+	if !first.GetDone() {
+		t.Fatalf("first Cancel: op must be done=true")
+	}
+
+	second, err := oh.Cancel(ctxA, &operationpb.CancelOperationRequest{OperationId: opID})
+	if err != nil {
+		t.Fatalf("re-Cancel must be idempotent (no error), got %v", err)
+	}
+	if !second.GetDone() {
+		t.Fatalf("re-Cancel: op must remain done=true")
+	}
+	if second.GetId() != opID {
+		t.Fatalf("re-Cancel returned id %q, want same op %q", second.GetId(), opID)
 	}
 }
 
