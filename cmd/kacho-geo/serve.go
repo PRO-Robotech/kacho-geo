@@ -297,19 +297,31 @@ func validateSecurityConfig(cfg config.Config) error {
 	if !cfg.PublicServerMTLS.Enable || !cfg.InternalServerMTLS.Enable {
 		return errors.New("mTLS required on both listeners: set KACHO_GEO_PUBLIC_SERVER_MTLS_ENABLE and KACHO_GEO_INTERNAL_SERVER_MTLS_ENABLE=true (or KACHO_GEO_AUTHZ_BREAKGLASS=true to bypass)")
 	}
-	// В production/production-strict allow-list доверенных форвардеров ОБЯЗАТЕЛЕН.
-	// Пустой список (config-default) означает «доверять ЛЮБОМУ mTLS-verified peer'у
-	// как форвардеру principal'а» (см. corelib grpcsrv.WithTrustedForwarders): любой
-	// внутренний под с валидным client-cert'ом мог бы выставить произвольный
-	// x-kacho-principal-* header и авторизоваться как чужой subject — principal-
-	// spoofing / confused-deputy до admin-CRUD Region/Zone (:9091). Требуем запинить
-	// хотя бы один непустой SAN (обычно api-gateway SA). Пустая строка в списке —
-	// НЕ форвардер (WithTrustedForwarders отбрасывает "" → trust-any), поэтому
-	// считаем только непустые. В dev — back-compat: пусто допустимо.
-	switch cfg.AuthMode {
-	case "production", "production-strict":
-		if countNonEmpty(cfg.AuthZTrustedForwarderSANs) == 0 {
-			return errors.New("production mode: KACHO_GEO_AUTHZ_TRUSTED_FORWARDER_SANS must pin at least one trusted-forwarder SAN (api-gateway SA); an empty allow-list trusts ANY mTLS-verified peer to forward end-user principals (principal-spoofing / confused-deputy to admin Region/Zone CRUD). Set the api-gateway SAN, or use KACHO_GEO_AUTH_MODE=dev for local back-compat")
+	// Secure-by-default: непустой allow-list доверенных форвардеров ОБЯЗАТЕЛЕН на
+	// ЛЮБОМ non-breakglass старте (не только production). Пустой список означает
+	// «доверять ЛЮБОМУ mTLS-verified peer'у как форвардеру principal'а» (см.
+	// corelib grpcsrv.WithTrustedForwarders): любой внутренний под с валидным
+	// client-cert'ом мог бы выставить произвольный x-kacho-principal-* header и
+	// авторизоваться как чужой subject — principal-spoofing / confused-deputy до
+	// admin-CRUD Region/Zone (:9091) или viewer-spoof на :9090. Раньше пустой
+	// список молча разрешался в dev (config-default) — insecure-by-default gap:
+	// оператор, забывший выставить production, отгружал spoofing-путь.
+	//
+	// Теперь trust-any — ЯВНЫЙ opt-in, не дефолт. Пустая строка в списке — НЕ
+	// форвардер (WithTrustedForwarders отбрасывает "" → trust-any), поэтому
+	// считаем только непустые.
+	if countNonEmpty(cfg.AuthZTrustedForwarderSANs) == 0 {
+		switch cfg.AuthMode {
+		case "production", "production-strict":
+			// В production trust-any недопустим ни при каких условиях — opt-in
+			// НЕ honored, обязателен реальный SAN api-gateway.
+			return errors.New("production mode: KACHO_GEO_AUTHZ_TRUSTED_FORWARDER_SANS must pin at least one trusted-forwarder SAN (api-gateway SA); an empty allow-list trusts ANY mTLS-verified peer to forward end-user principals (principal-spoofing / confused-deputy to admin Region/Zone CRUD). Set the api-gateway SAN")
+		default:
+			// dev: пустой allow-list разрешён ТОЛЬКО с явным dev-опт-ином. Без него —
+			// fail-closed отказ старта (secure-by-default).
+			if !cfg.AuthZTrustAnyForwarder {
+				return errors.New("secure-by-default: empty KACHO_GEO_AUTHZ_TRUSTED_FORWARDER_SANS trusts ANY mTLS-verified peer to forward end-user principals (principal-spoofing / confused-deputy to admin Region/Zone CRUD). Pin the api-gateway SAN, or set KACHO_GEO_AUTHZ_TRUST_ANY_FORWARDER=true to explicitly opt into trust-any for local dev (or KACHO_GEO_AUTHZ_BREAKGLASS=true for emergency full bypass)")
+			}
 		}
 	}
 	return nil

@@ -15,6 +15,8 @@ import (
 
 	region "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/region"
 	zone "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/zone"
+	"github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/shared/serviceerr"
+	"github.com/PRO-Robotech/kacho-geo/internal/protoconv"
 )
 
 // RegionHandler реализует geov1.RegionServiceServer (публичный, read-only).
@@ -30,20 +32,20 @@ func NewRegionHandler(uc *region.UseCase) *RegionHandler { return &RegionHandler
 func (h *RegionHandler) Get(ctx context.Context, req *geov1.GetRegionRequest) (*geov1.Region, error) {
 	r, err := h.uc.Get(ctx, req.GetRegionId())
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, serviceerr.ToStatus(err)
 	}
-	return toProtoRegion(r), nil
+	return protoconv.Region(r), nil
 }
 
 // List возвращает регионы (cursor-пагинация).
 func (h *RegionHandler) List(ctx context.Context, req *geov1.ListRegionsRequest) (*geov1.ListRegionsResponse, error) {
 	regions, next, err := h.uc.List(ctx, region.Pagination{PageSize: req.GetPageSize(), PageToken: req.GetPageToken()})
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, serviceerr.ToStatus(err)
 	}
 	resp := &geov1.ListRegionsResponse{NextPageToken: next}
 	for _, r := range regions {
-		resp.Regions = append(resp.Regions, toProtoRegion(r))
+		resp.Regions = append(resp.Regions, protoconv.Region(r))
 	}
 	return resp, nil
 }
@@ -61,20 +63,20 @@ func NewZoneHandler(uc *zone.UseCase) *ZoneHandler { return &ZoneHandler{uc: uc}
 func (h *ZoneHandler) Get(ctx context.Context, req *geov1.GetZoneRequest) (*geov1.Zone, error) {
 	z, err := h.uc.Get(ctx, req.GetZoneId())
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, serviceerr.ToStatus(err)
 	}
-	return toProtoZone(z), nil
+	return protoconv.Zone(z), nil
 }
 
 // List возвращает зоны (cursor-пагинация).
 func (h *ZoneHandler) List(ctx context.Context, req *geov1.ListZonesRequest) (*geov1.ListZonesResponse, error) {
 	zones, next, err := h.uc.List(ctx, zone.Pagination{PageSize: req.GetPageSize(), PageToken: req.GetPageToken()})
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, serviceerr.ToStatus(err)
 	}
 	resp := &geov1.ListZonesResponse{NextPageToken: next}
 	for _, z := range zones {
-		resp.Zones = append(resp.Zones, toProtoZone(z))
+		resp.Zones = append(resp.Zones, protoconv.Zone(z))
 	}
 	return resp, nil
 }

@@ -18,13 +18,16 @@ func quietLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// secure — конфиг с заданными authz и mTLS на обоих листенерах (без breakglass).
+// secure — genuinely-secure baseline: authz + mTLS на обоих листенерах + запиненный
+// trusted-forwarder SAN (api-gateway SA), без breakglass. Secure-by-default требует
+// непустой allow-list форвардеров на любом non-breakglass старте.
 func secure() config.Config {
 	return config.Config{
-		AuthMode:           "dev",
-		AuthZIAMGRPCAddr:   "kacho-iam:9091",
-		PublicServerMTLS:   grpcsrv.TLSServer{Enable: true},
-		InternalServerMTLS: grpcsrv.TLSServer{Enable: true},
+		AuthMode:                  "dev",
+		AuthZIAMGRPCAddr:          "kacho-iam:9091",
+		PublicServerMTLS:          grpcsrv.TLSServer{Enable: true},
+		InternalServerMTLS:        grpcsrv.TLSServer{Enable: true},
+		AuthZTrustedForwarderSANs: []string{gatewaySAN},
 	}
 }
 
@@ -72,20 +75,20 @@ func TestValidateSecurityConfig(t *testing.T) {
 	// В production/production-strict пустой allow-list доверенных форвардеров —
 	// критичный gap: любой mTLS-verified peer может форвардить произвольного
 	// principal'а (confused-deputy до admin-CRUD). Секьюр-гейт обязан отвергать
-	// старт без запиненного SAN api-gateway. В dev — back-compat, пусто допустимо.
+	// старт без запиненного SAN api-gateway (opt-in trust-any в prod НЕ honored).
 	prodNoFwd := secure()
 	prodNoFwd.AuthMode = "production"
+	prodNoFwd.AuthZTrustedForwarderSANs = nil
 
 	prodWithFwd := secure()
 	prodWithFwd.AuthMode = "production"
-	prodWithFwd.AuthZTrustedForwarderSANs = []string{gatewaySAN}
 
 	prodStrictNoFwd := secure()
 	prodStrictNoFwd.AuthMode = "production-strict"
+	prodStrictNoFwd.AuthZTrustedForwarderSANs = nil
 
 	prodStrictWithFwd := secure()
 	prodStrictWithFwd.AuthMode = "production-strict"
-	prodStrictWithFwd.AuthZTrustedForwarderSANs = []string{gatewaySAN}
 
 	// Пустая строка в списке — не форвардер (corelib WithTrustedForwarders
 	// отбрасывает "" → пустой allow-list → trust-any). Должен отвергаться так же.
@@ -93,8 +96,29 @@ func TestValidateSecurityConfig(t *testing.T) {
 	prodEmptyStrFwd.AuthMode = "production"
 	prodEmptyStrFwd.AuthZTrustedForwarderSANs = []string{""}
 
+	// Secure-by-default: dev с пустым allow-list форвардеров (trust-any) БОЛЬШЕ НЕ
+	// стартует молча — нужен либо запиненный SAN, либо ЯВНЫЙ dev-опт-ин
+	// AuthZTrustAnyForwarder=true. Пустой список без опт-ина → fail-closed отказ.
 	devNoFwd := secure()
 	devNoFwd.AuthMode = "dev"
+	devNoFwd.AuthZTrustedForwarderSANs = nil
+
+	// dev + пустой allow-list + явный trust-any опт-ин → ok (back-compat escape hatch).
+	devTrustAny := secure()
+	devTrustAny.AuthMode = "dev"
+	devTrustAny.AuthZTrustedForwarderSANs = nil
+	devTrustAny.AuthZTrustAnyForwarder = true
+
+	// dev + запиненный SAN (без опт-ина) → ok (secure путь) — это и есть secure().
+	devWithFwd := secure()
+	devWithFwd.AuthMode = "dev"
+
+	// production + trust-any опт-ин, но БЕЗ реального SAN → всё равно err: опт-ин
+	// dev-only, в production trust-any недопустим.
+	prodTrustAnyOptIn := secure()
+	prodTrustAnyOptIn.AuthMode = "production"
+	prodTrustAnyOptIn.AuthZTrustedForwarderSANs = nil
+	prodTrustAnyOptIn.AuthZTrustAnyForwarder = true
 
 	cases := []struct {
 		name    string
@@ -111,7 +135,10 @@ func TestValidateSecurityConfig(t *testing.T) {
 		{"production-strict without trusted forwarders → err", prodStrictNoFwd, true},
 		{"production-strict with trusted forwarder → ok", prodStrictWithFwd, false},
 		{"production with empty-string forwarder (trust-any) → err", prodEmptyStrFwd, true},
-		{"dev without trusted forwarders → ok (back-compat)", devNoFwd, false},
+		{"production trust-any opt-in without SAN → err (opt-in not honored in prod)", prodTrustAnyOptIn, true},
+		{"dev without trusted forwarders, no opt-in → err (secure-by-default)", devNoFwd, true},
+		{"dev with explicit trust-any opt-in → ok (back-compat escape hatch)", devTrustAny, false},
+		{"dev with pinned SAN → ok (secure path)", devWithFwd, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
