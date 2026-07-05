@@ -58,12 +58,21 @@ type Readers struct {
 	Zone   ZoneReader
 }
 
-// kind — категория операции, выводимая из типа метаданных.
+// kind — категория операции, выводимая из типа метаданных. Три значения намеренно
+// зеркалят таксономию метаданных corelib-Resolver (Create/Update/Delete), а не
+// схлопнуты в bool: kindCreate и kindUpdate дают идентичный исход (present →
+// Done(current)) не по копипасте, а потому что таков ПЛАТФОРМЕННЫЙ контракт
+// reconcile (kacho-corelib/operations: «Create/Update-метаданные: present →
+// Done(current)» — reconcile к committed-реальности, НЕ re-apply). Отдельные
+// самодокументирующие метки на switch-диспетче (case *Update*Metadata →
+// kindUpdate) сохранены как type-level seam: если платформенный контракт когда-либо
+// разведёт update-семантику (напр. orphan-Update → Interrupted вместо Done, см.
+// docs/architecture/known-divergences.md §7), точка расхождения уже названа.
 type kind int
 
 const (
 	kindCreate kind = iota // present → Done(current); absent → Interrupted
-	kindUpdate             // как Create (reconcile к committed-реальности, не re-apply)
+	kindUpdate             // ТОЖДЕСТВЕНЕН kindCreate по контракту reconcile (см. выше), метка намеренная
 	kindDelete             // absent → Done(Empty); present → Interrupted
 )
 

@@ -126,3 +126,100 @@ usable only under dev `AuthMode` for a local emergency.
 so a lost-attribution admin mutation is observable in the `geo_outbox` audit row
 itself rather than a silent blank (CWE-778). The normal no-auth path is unaffected
 — `operations.PrincipalFromContext` yields `system:bootstrap`, never an empty ID.
+
+## 6. Config defaults are dev-convenience (`AuthMode=dev`, `DBSSLMode=disable`); production posture is fail-closed but not the default
+
+**What.** `internal/apps/kacho/config` defaults `AuthMode` to `"dev"` and
+`DBSSLMode` to `"disable"`. In `dev` posture `validateAuthMode` only *warns* on a
+plaintext DB connection (it does not fail), and the emergency opt-ins remain
+individually honorable. A deploy whose env template forgets
+`KACHO_GEO_AUTH_MODE=production` therefore starts in `dev` posture with an
+`sslmode=disable` Postgres connection.
+
+**Why it is not a live bypass.** The dangerous relaxations are already fail-closed
+by their own explicit gate, so the `dev` default is a *misconfiguration foothold*,
+not a live escape:
+
+- **Anonymous / no-mTLS admin is impossible without a second explicit flag.** A
+  non-breakglass start — regardless of `AuthMode` — still requires, via
+  `validateSecurityConfig`: a non-empty `KACHO_GEO_AUTHZ_IAM_GRPC_ADDR` (per-RPC
+  authz Check), `mTLS enabled on both listeners`, and a pinned trusted-forwarder
+  SAN **or** the explicit `KACHO_GEO_AUTHZ_TRUST_ANY_FORWARDER=true` dev opt-in.
+  So the `dev` default alone does not open an unauthenticated/unauthorized path.
+- **Breakglass and trust-any are already fail-closed in production** (§5): both are
+  rejected outright under `production`/`production-strict`, and both require an
+  explicit env var even in dev. The only behaviors the `dev` default *itself*
+  relaxes vs production are (a) plaintext DB → warn-not-fail, and (b) the two
+  dev-only opt-ins remain *available if explicitly set*.
+- **Production posture is enforced by the deployed stack.** `security.md` mandates
+  every deploy run `production-mode` (dev-mode on a cluster is a stated security
+  debt), and the Helm/env template — not the binary default — sets it; the
+  `production` branch fail-closes on `sslmode=disable`.
+
+**Why the default is not changed here.** `AuthMode=dev` + `DBSSLMode=disable` is the
+required posture for local `make dev-up` and the testcontainers/unit fixtures
+(local Postgres has no TLS), which `security.md` explicitly permits for
+non-deployed fixtures. Flipping the binary default to `production` would fail-close
+those mandated dev fixtures at startup. Hardening the default belongs to the
+platform (a corelib-level "secure-by-default posture" decision shared by every
+kacho service), not a geo-local flip. Recorded here so the dev-default posture is
+not re-flagged as a geo defect.
+
+**Boundary.** If the platform adopts a fail-closed default posture, it lands in
+`kacho-corelib` (or the shared deploy chart) for all services at once; geo picks it
+up unchanged. Until then the invariant that keeps this safe is: **every deployed
+stack sets `KACHO_GEO_AUTH_MODE=production[-strict]`** (fail-closed on plaintext DB).
+
+## 7. Orphan-`Update` LRO reconciles to `Done(current)` — reconcile-to-committed-reality, not re-apply
+
+**What.** `operationresolver.resolveExistence` treats `Update`-metadata orphans
+exactly like `Create`: resource present → `Done(current)`, absent → `Interrupted`.
+If a process crashes after `operations.Create` wrote the LRO row but before the
+writer-TX `UPDATE ... RETURNING` committed, the reconciler later finds the resource
+present (with pre-update values) and finalizes the operation as `Done` with the
+*current* (unchanged) resource — the mutation is reported as a successful operation
+even though it never applied (a lost update surfaced as success).
+
+**Why it is by-design (platform contract).** This is the **corelib LRO reconcile
+contract**, not a geo-local choice: `kacho-corelib/operations` documents the
+resolver semantics as "Create/Update-метаданные: ресурс присутствует →
+`{OutcomeDone, current}`" — the reconciler reconciles the operation status to
+committed reality and deliberately does **not** re-drive the worker closure
+(re-apply). Every kacho service that uses the corelib reconciler (`kacho-vpc`,
+`kacho-compute`, `kacho-nlb`) inherits the identical semantics. The resource itself
+stays internally consistent (the writer-TX is atomic — it either fully committed or
+not at all); only the *operation outcome* of the rare crash-mid-Update window is
+optimistic. The resolver header (`internal/operationresolver/resolver.go`) states
+this contract explicitly.
+
+**Why not changed / instrumented geo-locally.** The two candidate improvements — a
+distinct terminal marker (reconcile-completed vs worker-completed) or resolving
+orphan-`Update` to `Interrupted` so the client re-issues — both change the
+**platform** reconcile contract, so they belong in `kacho-corelib/operations` (once,
+for all services), not as a geo-only divergence that would drift geo from the shared
+LRO pattern. No proto/REST contract is affected either way. The `kindUpdate`
+dispatch label is retained (§ resolver `kind` enum) precisely as the named
+type-level seam where such a future stricter Update-semantics would attach.
+
+**Boundary.** If stricter LRO semantics are ever required, the change is a corelib
+`Resolver`-contract revision picked up by every service; geo's
+`kindUpdate` case is the attach point. Not planned.
+
+## 8. `resolveExistence` `kind` enum keeps `kindCreate`/`kindUpdate` distinct despite an identical outcome
+
+**What.** The `kind` enum has three values (`kindCreate`, `kindUpdate`,
+`kindDelete`) but `resolveExistence` only branches on `kindDelete`; `kindCreate`
+and `kindUpdate` fall through to a byte-identical present→`Done` / absent→
+`Interrupted` path.
+
+**Why the distinction is intentional, not dead dup.** The identical Create/Update
+outcome is the platform reconcile contract (§7), not accidental copy-paste. The
+three constants mirror the corelib `Resolver`'s own Create/Update/Delete metadata
+taxonomy and keep the `Resolve` switch self-documenting
+(`case *UpdateRegionMetadata: … kindUpdate`). Collapsing to a bare `isDelete bool`
+(or dropping `kindUpdate`) would trade a two-line reduction for a less-readable
+call site (`resolveExistence(ctx, false, …)`) and would erase the type-level seam
+that §7's potential future stricter Update-semantics would attach to. This is a
+deliberate KISS-vs-self-documentation trade decided in favor of the named labels;
+the enum comment states the rationale in-code so a maintainer does not mistake the
+identical branch for an omission. Not a defect; not collapsed.
