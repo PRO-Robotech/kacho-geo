@@ -4,7 +4,9 @@
 package dberr_test
 
 import (
+	"bytes"
 	stderrors "errors"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -60,5 +62,50 @@ func TestWrap_uncategorized_internal(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "raw driver text") {
 		t.Fatalf("Wrap(raw) leaked driver text: %q", err.Error())
+	}
+}
+
+// withCapturedDefaultLogger временно подменяет slog.Default() на буфер и
+// восстанавливает по завершении теста.
+func withCapturedDefaultLogger(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+// TestWrap_unhandledSQLSTATE_loggedNotLeaked — некатегоризированный SQLSTATE
+// (deadlock 40P01) коллапсирует в ErrInternal (no-leak в err.Error()), НО
+// SQLSTATE попадает в server-log для operator-trail (CWE-390: раньше root cause
+// выбрасывался без следа).
+func TestWrap_unhandledSQLSTATE_loggedNotLeaked(t *testing.T) {
+	buf := withCapturedDefaultLogger(t)
+	pgErr := &pgconn.PgError{Code: "40P01", Message: "deadlock detected"}
+	err := dberr.Wrap(pgErr, "Zone", "region-1-a")
+
+	if !stderrors.Is(err, geoerrors.ErrInternal) {
+		t.Fatalf("Wrap(40P01) = %v, want ErrInternal", err)
+	}
+	if strings.Contains(err.Error(), "deadlock detected") {
+		t.Fatalf("Wrap(40P01) leaked pg text into err.Error(): %q", err.Error())
+	}
+	logged := buf.String()
+	if !strings.Contains(logged, "40P01") {
+		t.Fatalf("SQLSTATE 40P01 not captured in server log; operator has no trail. log=%q", logged)
+	}
+}
+
+// TestWrap_uncategorizedNonPg_logged — не-pg ошибка (deadline/conn reset) тоже
+// логируется на repo-границе перед коллапсом в sentinel.
+func TestWrap_uncategorizedNonPg_logged(t *testing.T) {
+	buf := withCapturedDefaultLogger(t)
+	err := dberr.Wrap(stderrors.New("connection reset by peer"), "Region", "r-1")
+	if !stderrors.Is(err, geoerrors.ErrInternal) {
+		t.Fatalf("Wrap(raw) = %v, want ErrInternal", err)
+	}
+	if !strings.Contains(buf.String(), "connection reset by peer") {
+		t.Fatalf("raw db error not captured in server log; log=%q", buf.String())
 	}
 }

@@ -92,20 +92,26 @@ func PermissionMap() authz.RPCMap {
 			Permission: "geo.zones.delete",
 		},
 
-		// ---- LRO Operation-envelope (Public exempt) ----
+		// ---- LRO Operation-envelope (ReBAC-exempt, owner-scoped в handler) ----
 		// Все admin Region/Zone Create/Update/Delete асинхронны и возвращают
 		// Operation, который клиент поллит через OperationService.Get. Оба RPC
 		// подняты на public (:9090) и internal (:9091) листенерах и помечены
-		// Public:true — освобождены от per-RPC authz Check.
+		// Public:true.
 		//
-		// ⚠ Модель контроля доступа к Operation: ЕДИНСТВЕННЫЙ барьер — непрозрачный
-		// негадаемый op-id (capability-style). Data-уровневой проверки creator/owner
-		// в OperationHandler НЕТ (Get/Cancel читают по id без principal-скоупинга) —
-		// не полагайтесь на несуществующую owner-проверку при переиспользовании
-		// паттерна для ресурса с чувствительным LRO-response. Зеркалит текущую
-		// модель kacho-vpc / kacho-compute; ужесточение (creator-equality gate) —
-		// платформенное решение на все три сервиса, не geo-локальное (см. отчёт
-		// sec-hardening-r2: finding «OperationService Cancel/Get authz-exempt»).
+		// `Public:true` тут означает «снят per-RPC ReBAC-Check», а НЕ
+		// «unauthenticated / без owner-гейта»: в FGA-модели нет object type
+		// `geo_operation` и per-operation tuple'ы не эмитятся, поэтому
+		// `Check viewer on geo_operation:<id>` не имеет пути и отверг бы даже
+		// owner-poll. Anti-anon (principal-цепочка на обоих листенерах) сохраняется.
+		//
+		// Ownership энфорсится В HANDLER'е (sec-hardening-r3): OperationHandler.
+		// Get/Cancel через ownership-scoped GetOwned/CancelOwned (owner —
+		// creator-principal из доверенного ctx, предикат в SQL WHERE; чужой op-id →
+		// NotFound, no-leak). Op-id опакен, но это прямой object-reference — раньше
+		// ЕДИНСТВЕННЫМ барьером был негадаемый id (capability-style), что позволяло
+		// BOLA (read/cancel чужой in-flight admin-мутации по утёкшему id). Теперь
+		// закрыто owner-предикатом. Анти-регресс: пометка Public тут НЕ освобождает
+		// Operation RPC ни от anti-anon, ни от ownership. Зеркалит kacho-vpc.
 		"/kacho.cloud.operation.OperationService/Get":    {Public: true},
 		"/kacho.cloud.operation.OperationService/Cancel": {Public: true},
 	}

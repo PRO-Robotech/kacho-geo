@@ -12,6 +12,7 @@ package domain
 
 import (
 	"fmt"
+	"regexp"
 	"time"
 	"unicode/utf8"
 )
@@ -21,6 +22,34 @@ import (
 // длину (charset-regex из corelib рассчитан на strict slug-ресурсы и отверг бы
 // пробелы/uppercase).
 const maxNameLen = 253
+
+// maxIDLen — верхняя граница id Region/Zone (DNS-label-подобный slug, 63 симв.).
+const maxIDLen = 63
+
+// idFormat — slug-инвариант admin-assigned id: строчная буква в начале, далее
+// hyphen-разделённые сегменты строчных alnum (без ведущего/висящего/двойного
+// дефиса, без uppercase/пробелов/пунктуации/подчёркиваний). id — канонический
+// cross-service reference key (другие сервисы хранят его как TEXT и сверяют по
+// RegionService.Get / ZoneService.Get), поэтому его форма — контракт, а не
+// свободный ярлык (в отличие от Name).
+var idFormat = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
+
+// ValidateID проверяет slug-инвариант id ресурса Region/Zone (и region_id, того
+// же namespace). Пустой id → "<field> is required"; слишком длинный или не-slug →
+// InvalidArgument-текст. Вызывается из Region/Zone.Validate на Create-пути, чтобы
+// малформ отвергался синхронно, а не персистился как PK/canonical reference.
+func ValidateID(field, value string) error {
+	if value == "" {
+		return fmt.Errorf("%s is required", field)
+	}
+	if len(value) > maxIDLen {
+		return fmt.Errorf("%s exceeds %d characters", field, maxIDLen)
+	}
+	if !idFormat.MatchString(value) {
+		return fmt.Errorf("%s must be a lowercase slug (^[a-z][a-z0-9-]*$, hyphen-separated, e.g. region-1)", field)
+	}
+	return nil
+}
 
 // ZoneStatus — статус availability-zone. Ширина int32 точно совпадает с
 // geov1.Zone_Status, поэтому конверсии domain↔proto точны (без сужения int→int32).
@@ -65,8 +94,8 @@ type Region struct {
 // Validate проверяет domain-инварианты Region перед созданием/сохранением.
 // id обязан быть непустым (admin-assigned PK); name — в пределах лимита длины.
 func (r Region) Validate() error {
-	if r.ID == "" {
-		return fmt.Errorf("region id is required")
+	if err := ValidateID("region id", r.ID); err != nil {
+		return err
 	}
 	if err := ValidateName("region name", r.Name); err != nil {
 		return err
@@ -88,11 +117,11 @@ type Zone struct {
 // id и region_id обязаны быть непустыми; name — в пределах лимита длины;
 // status — известное значение enum.
 func (z Zone) Validate() error {
-	if z.ID == "" {
-		return fmt.Errorf("zone id is required")
+	if err := ValidateID("zone id", z.ID); err != nil {
+		return err
 	}
-	if z.RegionID == "" {
-		return fmt.Errorf("zone region_id is required")
+	if err := ValidateID("zone region_id", z.RegionID); err != nil {
+		return err
 	}
 	if err := ValidateName("zone name", z.Name); err != nil {
 		return err

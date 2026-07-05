@@ -31,8 +31,57 @@ disappear. Not planned.
 
 ## 2. Black-box Newman suite not run from this repo
 
-See `tests/newman/README.md`. The suite is planned/tracked, authored against the
-deployed stack (`kacho-deploy`), not `go test` in this repo. The
-security-critical slice (admin verbs not on the public endpoint) is covered at
-wiring level by `cmd/kacho-geo/cert_bound_identity_test.go` and
-`public_principal_test.go`.
+See `tests/newman/README.md`. The suite is tracked as a concrete open ticket
+([PRO-Robotech/kacho-geo#10](https://github.com/PRO-Robotech/kacho-geo/issues/10),
+`Tests-followup` per rule #12), authored against the deployed stack
+(`kacho-deploy`), not `go test` in this repo. The security-critical slices are
+covered at the Go layer today: the admin-verbs-not-on-public split by
+`cmd/kacho-geo/serve_registration_test.go` (inspects the real
+`grpc.Server.GetServiceInfo()` of both listeners), and OperationService
+owner-scoping by `internal/handler/operation_owner_test.go` +
+`internal/repo/kacho/pg/operation_owner_integration_test.go`.
+
+## 3. Config via corelib `envconfig` struct-tags, not YAML/viper/koanf
+
+**What.** `internal/apps/kacho/config` binds all settings through
+`envconfig:"…"` struct-tags via `corelib config.LoadPrefixed("KACHO_GEO")`,
+rather than a YAML file loaded through viper/koanf as the evgeniy regime
+prescribes.
+
+**Why it is not a geo-local defect.** This is the **platform-wide** config
+mechanism: `kacho-corelib/config` exposes `LoadPrefixed`, and every kacho service
+(`kacho-vpc`, `kacho-compute`, `kacho-iam`, `kacho-nlb`, …) uses it identically.
+Env-only 12-factor config is a deliberate cross-service decision; per-edge TLS
+blocks are expressed via env-name prefixing. Migrating to a YAML/viper loader is a
+workspace-wide corelib change, not a per-service one — it would be made once in
+corelib for all services or not at all. Recorded here so the regime item is not
+re-flagged per service.
+
+**Boundary.** If layered/file-based config with hot-reload is ever required
+platform-wide, the change lands in `kacho-corelib/config` (keeping the per-edge
+TLS structs), and every service picks it up. Not planned.
+
+## 4. Resource-id validated by a `domain.ValidateID` function, not a newtype
+
+**What.** `Region.ID`, `Zone.ID`, `Zone.RegionID` remain bare `string` fields.
+The id-format invariant (lowercase slug `^[a-z][a-z0-9-]*$`, hyphen-separated, ≤63
+chars) is enforced by `domain.ValidateID`, called from `Region.Validate` /
+`Zone.Validate` on the Create path (sec-hardening-r3) — malformed ids are rejected
+synchronously with `InvalidArgument` and never persisted as the canonical
+cross-service reference key. This closes the substantive gap (no id-format
+contract) that the audit flagged.
+
+**Why not a self-validating newtype.** The evgeniy/godzila regime prefers domain
+newtypes (`RegionID`/`ZoneID`) over bare primitives. A validating function was
+chosen instead because a full newtype rollout ripples through domain structs,
+repo scan targets, protoconv, and the reconciler read-ports without adding
+enforcement the function does not already provide — the invariant is fully
+enforced either way. The newtype refactor is a style-only follow-up (regime
+alignment), not a security/consistency gap.
+
+**Note (owner-scope, no admin bypass).** `OperationHandler.Get/Cancel` owner-scope
+strictly by creator-principal with **no** cluster-admin bypass (unlike
+`kacho-vpc`, which has a `tenant.Admin` cross-cut). geo has no tenant/admin ctx
+concept — every mutation already requires `system_admin`, and each operation
+belongs to the admin that created it — so a bypass would be dead surface. This is
+intentional, not a missing feature.

@@ -104,9 +104,15 @@ func runServe(cfg config.Config) error {
 
 	authzIntr, aerr := check.NewInterceptor(check.Options{
 		ServiceName: "kacho-geo",
-		IAMConn:     authzConn,
-		Breakglass:  cfg.AuthZBreakglass,
-		Logger:      logger,
+		// authzIAMConn(nil) → ИСТИННЫЙ nil интерфейса, а не typed-nil
+		// (*grpc.ClientConn)(nil), обёрнутый в interface (который != nil). Иначе
+		// guard `if opts.IAMConn == nil` в check.NewInterceptor не сработал бы,
+		// ErrIAMConnNotConfigured-ветка ниже стала бы мёртвой, а при ослаблении
+		// upstream-guard'а клиент построился бы поверх nil-conn и паникнул на
+		// первом Check (CWE-476).
+		IAMConn:    authzIAMConn(authzConn),
+		Breakglass: cfg.AuthZBreakglass,
+		Logger:     logger,
 	})
 
 	// ── цепочки интерсепторов ──────────────────────────────────────────────
@@ -152,6 +158,16 @@ func runServe(cfg config.Config) error {
 	case aerr != nil:
 		return fmt.Errorf("build authz interceptor: %w", aerr)
 	}
+
+	// ── panic-recovery как OUTERMOST interceptor обоих листенеров ──────────
+	// Ставим ПЕРВЫМ (index 0) в каждую цепочку: grpc.ChainUnary/StreamInterceptor
+	// исполняет их слева-направо, поэтому recovery оборачивает и все нижележащие
+	// interceptor'ы (principal-extract, authz), и сам handler. Без него паника в
+	// любом handler-goroutine уронила бы весь процесс (оба листенера) — DoS.
+	publicUnary = append([]grpc.UnaryServerInterceptor{recoveryUnaryInterceptor(logger)}, publicUnary...)
+	publicStream = append([]grpc.StreamServerInterceptor{recoveryStreamInterceptor(logger)}, publicStream...)
+	internalUnary = append([]grpc.UnaryServerInterceptor{recoveryUnaryInterceptor(logger)}, internalUnary...)
+	internalStream = append([]grpc.StreamServerInterceptor{recoveryStreamInterceptor(logger)}, internalStream...)
 
 	// ── server-creds (mTLS обязателен на обоих листенерах, кроме breakglass —
 	// это проверено validateSecurityConfig выше) ──
@@ -310,6 +326,19 @@ func countNonEmpty(ss []string) int {
 		}
 	}
 	return n
+}
+
+// authzIAMConn нормализует *grpc.ClientConn в grpc.ClientConnInterface без
+// typed-nil-ловушки: при nil-conn возвращает ИСТИННЫЙ nil интерфейса (а не
+// interface, обёртывающий (*grpc.ClientConn)(nil), который сравнением == nil даёт
+// false). Благодаря этому guard `if opts.IAMConn == nil` в check.NewInterceptor
+// корректно отдаёт ErrIAMConnNotConfigured, а не строит IAM-клиент поверх
+// nil-conn (CWE-476: паника на первом Check при ослаблении upstream-guard'а).
+func authzIAMConn(conn *grpc.ClientConn) grpc.ClientConnInterface {
+	if conn == nil {
+		return nil
+	}
+	return conn
 }
 
 // newPrincipalInterceptors собирает trust-aware principal-цепочку

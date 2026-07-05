@@ -104,8 +104,14 @@ type OpsRepo struct {
 // NewOpsRepo создаёт пустой in-memory LRO-репозиторий.
 func NewOpsRepo() *OpsRepo { return &OpsRepo{ops: make(map[string]*operations.Operation)} }
 
-// Create сохраняет новую операцию (done=false).
-func (r *OpsRepo) Create(_ context.Context, op operations.Operation) error {
+// Create сохраняет новую операцию (done=false). Principal резолвится тем же
+// приоритетом, что и pgRepo.Create (op.Principal → ctx → SystemPrincipal), чтобы
+// ownership-scoped GetOwned/CancelOwned в тестах вели себя как прод: строка
+// хранит creator-principal, а не zero-value.
+func (r *OpsRepo) Create(ctx context.Context, op operations.Operation) error {
+	if op.Principal == (operations.Principal{}) {
+		op.Principal = operations.PrincipalFromContext(ctx) // SystemPrincipal-fallback без auth-ctx
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	cp := op
@@ -113,9 +119,15 @@ func (r *OpsRepo) Create(_ context.Context, op operations.Operation) error {
 	return nil
 }
 
-// CreateWithPrincipal — то же, principal в in-memory моке не различается.
-func (r *OpsRepo) CreateWithPrincipal(ctx context.Context, op operations.Operation, _ operations.Principal) error {
-	return r.Create(ctx, op)
+// CreateWithPrincipal — то же, но principal передан явно (мок его сохраняет для
+// ownership-предиката GetOwned/CancelOwned).
+func (r *OpsRepo) CreateWithPrincipal(_ context.Context, op operations.Operation, p operations.Principal) error {
+	op.Principal = p
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := op
+	r.ops[op.ID] = &cp
+	return nil
 }
 
 // Get возвращает операцию по id (ErrNotFound если нет).
@@ -179,7 +191,57 @@ func (r *OpsRepo) Cancel(_ context.Context, id string) error {
 	return nil
 }
 
-var _ operations.Repo = (*OpsRepo)(nil)
+// ownerMatches зеркалит ownerPredicateSQL corelib'а: match по паре
+// (principal_type, principal_id). Account-ветка предиката в geo инертна (каталог
+// cluster-scoped, без account-metadata — операции пишутся с account_id=NULL), а
+// operations.Operation вообще не проецирует account_id, поэтому в моке её нет.
+func ownerMatches(op *operations.Operation, owner operations.Owner) bool {
+	return op.Principal.Type == owner.PrincipalType && op.Principal.ID == owner.PrincipalID
+}
+
+// GetOwned возвращает операцию по id ТОЛЬКО если она принадлежит owner. Нет
+// такой ИЛИ не владелец → ErrNotFound (no-leak, неотличимо). Зеркалит
+// pgRepo.GetOwned.
+func (r *OpsRepo) GetOwned(_ context.Context, id string, owner operations.Owner) (*operations.Operation, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	op, ok := r.ops[id]
+	if !ok || !ownerMatches(op, owner) {
+		return nil, operations.ErrNotFound
+	}
+	cp := *op
+	return &cp, nil
+}
+
+// CancelOwned атомарно (под mutex'ом) отменяет операцию owner'а. Идемпотентно на
+// уже-CANCELLED (→ тот же Operation); на терминале SUCCESS/ERROR → ErrAlreadyDone;
+// чужая/нет → ErrNotFound. Зеркалит pgRepo.CancelOwned.
+func (r *OpsRepo) CancelOwned(_ context.Context, id string, owner operations.Owner) (*operations.Operation, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	op, ok := r.ops[id]
+	if !ok || !ownerMatches(op, owner) {
+		return nil, operations.ErrNotFound
+	}
+	if op.Done {
+		// Уже CANCELLED (error_code=1 == codes.Canceled) → идемпотентно OK.
+		if op.Error != nil && op.Error.GetCode() == 1 {
+			cp := *op
+			return &cp, nil
+		}
+		return nil, operations.ErrAlreadyDone // терминал SUCCESS/ERROR
+	}
+	op.Done = true
+	op.Error = &status.Status{Code: 1, Message: "operation cancelled"}
+	op.ModifiedAt = time.Now().UTC()
+	cp := *op
+	return &cp, nil
+}
+
+var (
+	_ operations.Repo               = (*OpsRepo)(nil)
+	_ operations.OwnedOperationRepo = (*OpsRepo)(nil)
+)
 
 // AwaitOpDone детерминированно ждёт Done==true вместо time.Sleep (worker
 // финализирует операцию в отдельной goroutine). Таймаут 2s.
