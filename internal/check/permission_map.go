@@ -91,5 +91,16 @@ func PermissionMap() authz.RPCMap {
 			Extract:    staticClusterCatalog(),
 			Permission: "geo.zones.delete",
 		},
+
+		// ---- LRO Operation-envelope (Public exempt) ----
+		// Все admin Region/Zone Create/Update/Delete асинхронны и возвращают
+		// Operation, который клиент поллит через OperationService.Get. Оба RPC
+		// подняты на public (:9090) и internal (:9091) листенерах, и оба проходят
+		// fail-closed authz-interceptor: не-замапленный RPC → PermissionDenied.
+		// Op-id непрозрачен и негадаем, авторизуется на data-уровне (creator),
+		// поэтому per-RPC tenant-authz Check неприменим — Public:true exempt.
+		// Зеркалит kacho-vpc / kacho-compute.
+		"/kacho.cloud.operation.OperationService/Get":    {Public: true},
+		"/kacho.cloud.operation.OperationService/Cancel": {Public: true},
 	}
 }

@@ -55,14 +55,41 @@ func TestPermissionMap_tiersAndPermissions(t *testing.T) {
 		}
 	}
 
-	// Каждая запись должна резолвиться в (cluster, cluster_kacho_root).
+	// Каждая gated-запись должна резолвиться в (cluster, cluster_kacho_root).
+	// Public-exempt записи (OperationService LRO) не имеют Extract — пропускаем.
 	for method, e := range m {
+		if e.Public {
+			continue
+		}
 		ot, oid, err := e.Extract(nil)
 		if err != nil {
 			t.Fatalf("%s extract err = %v", method, err)
 		}
 		if ot != objectTypeCluster || oid != clusterSingletonObject {
 			t.Errorf("%s extract = (%s,%s), want (cluster,cluster_kacho_root)", method, ot, oid)
+		}
+	}
+}
+
+// TestPermissionMap_operationServiceLROExempt защищает от регрессии, при которой
+// OperationService.Get/Cancel отсутствуют в PermissionMap. Оба RPC подняты на
+// public (:9090) и internal (:9091) листенерах и проходят fail-closed authz-
+// interceptor: не-замапленный RPC → PermissionDenied, что делает поллинг любой
+// async admin-мутации (Region/Zone Create/Update/Delete → Operation) невозможным
+// в secure-by-default конфиге. Зеркалит kacho-vpc / kacho-compute (Public:true).
+func TestPermissionMap_operationServiceLROExempt(t *testing.T) {
+	m := PermissionMap()
+
+	for _, method := range []string{
+		"/kacho.cloud.operation.OperationService/Get",
+		"/kacho.cloud.operation.OperationService/Cancel",
+	} {
+		e, ok := m.Lookup(method)
+		if !ok {
+			t.Fatalf("%s missing from PermissionMap: LRO polling fail-closes to PermissionDenied", method)
+		}
+		if !e.Public {
+			t.Errorf("%s Public = false, want true (LRO exempt from tenant-authz Check)", method)
 		}
 	}
 }
