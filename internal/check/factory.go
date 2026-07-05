@@ -6,7 +6,6 @@ package check
 import (
 	"errors"
 	"log/slog"
-	"time"
 
 	"google.golang.org/grpc"
 
@@ -19,11 +18,6 @@ type Options struct {
 	IAMConn     grpc.ClientConnInterface
 	Breakglass  bool
 	Logger      *slog.Logger
-
-	CheckTimeout         time.Duration
-	DenyRateLimitPerSec  float64
-	CacheTTL             time.Duration
-	AllowSystemPrincipal bool
 }
 
 // ErrIAMConnNotConfigured — IAM conn = nil И Breakglass=false.
@@ -49,15 +43,16 @@ func NewInterceptor(opts Options) (*authz.Interceptor, error) {
 		}
 		client = NewIAMCheckClient(opts.IAMConn)
 	}
+	// CheckTimeout / DenyRateLimitPerSec / AllowSystemPrincipal / Cache-TTL не
+	// прокидываются из конфига geo — corelib authz применяет свои дефолты
+	// (CheckTimeout→2s, cache-TTL 0). Держим их на дефолте намеренно: отдельных
+	// operator-knob'ов для них geo не заводит.
 	return authz.NewInterceptor(authz.InterceptorOptions{
-		ServiceName:          opts.ServiceName,
-		Map:                  PermissionMap(),
-		Client:               client,
-		Cache:                authz.NewCache(opts.CacheTTL),
-		Logger:               opts.Logger,
-		Breakglass:           opts.Breakglass,
-		DenyRateLimitPerSec:  opts.DenyRateLimitPerSec,
-		CheckTimeout:         opts.CheckTimeout,
-		AllowSystemPrincipal: opts.AllowSystemPrincipal,
+		ServiceName: opts.ServiceName,
+		Map:         PermissionMap(),
+		Client:      client,
+		Cache:       authz.NewCache(0),
+		Logger:      opts.Logger,
+		Breakglass:  opts.Breakglass,
 	}), nil
 }

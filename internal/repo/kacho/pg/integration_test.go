@@ -77,6 +77,16 @@ func TestRegionGetNotFound(t *testing.T) {
 	require.True(t, stderrors.Is(err, geoerrors.ErrNotFound), "got %v", err)
 }
 
+// TestZoneGetNotFound — отсутствующий zone id → ErrNotFound (parity с
+// TestRegionGetNotFound; Zone.Get — отдельный SELECT + status-scan путь, не
+// покрывается region-тестом транзитивно).
+func TestZoneGetNotFound(t *testing.T) {
+	pool := newTestPool(t)
+	zr := pg.NewZoneRepo(pool)
+	_, err := zr.Get(context.Background(), "no-such-zone")
+	require.True(t, stderrors.Is(err, geoerrors.ErrNotFound), "got %v", err)
+}
+
 func TestRegionList(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
@@ -371,7 +381,7 @@ func TestList_malformedPageToken_invalidArgument(t *testing.T) {
 	zr := pg.NewZoneRepo(pool)
 
 	badTokens := []string{
-		"!!!notbase64",                                  // не base64
+		"!!!notbase64", // не base64
 		base64.StdEncoding.EncodeToString([]byte("{")),  // base64, но битый JSON
 		base64.StdEncoding.EncodeToString([]byte(`{}`)), // валидный JSON, пустой cursor id
 	}

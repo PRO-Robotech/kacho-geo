@@ -12,8 +12,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	operationpb "github.com/PRO-Robotech/kacho-proto/gen/go/kacho/cloud/operation"
 	geov1 "github.com/PRO-Robotech/kacho-proto/gen/go/kacho/cloud/geo/v1"
+	operationpb "github.com/PRO-Robotech/kacho-proto/gen/go/kacho/cloud/operation"
 
 	region "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/region"
 	zone "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/zone"
@@ -95,6 +95,23 @@ func TestZoneHandler_Get_happy_statusMapped(t *testing.T) {
 	}
 	if resp.GetRegionId() != "region-1" || resp.GetStatus() != geov1.Zone_UP {
 		t.Fatalf("Get resp = %+v", resp)
+	}
+}
+
+// TestZoneHandler_Get_notFound_mapsToNotFound — ZoneRepo.Get отдаёт
+// geoerrors.ErrNotFound → публичный ZoneService.Get маппит в codes.NotFound
+// (parity с region Get-notFound; Zone.Get — отдельный код-путь).
+func TestZoneHandler_Get_notFound_mapsToNotFound(t *testing.T) {
+	mock := &repomock.ZoneRepo{
+		GetFunc: func(_ context.Context, _ string) (*domain.Zone, error) {
+			return nil, geoerrors.ErrNotFound
+		},
+	}
+	uc := zone.New(mock, mock, repomock.NewOpsRepo(), serviceerr.ToStatus)
+	h := handler.NewZoneHandler(uc)
+	_, err := h.Get(context.Background(), &geov1.GetZoneRequest{ZoneId: "no-such-zone"})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("want NOT_FOUND for absent zone, got %v", err)
 	}
 }
 

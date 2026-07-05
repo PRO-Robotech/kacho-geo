@@ -120,6 +120,15 @@ func TestValidateSecurityConfig(t *testing.T) {
 	prodTrustAnyOptIn.AuthZTrustedForwarderSANs = nil
 	prodTrustAnyOptIn.AuthZTrustAnyForwarder = true
 
+	// Breakglass — аварийный ПОЛНЫЙ обход authz Check + mTLS. В production posture
+	// (production / production-strict) он НЕ honored: один env-флаг молча снял бы
+	// всю аутентификацию/авторизацию на развёрнутом стенде, а forged
+	// principal-header на plaintext-листенере дал бы admin Region/Zone CRUD
+	// (CWE-489). Разрешён ТОЛЬКО вне production (dev / emergency-local).
+	bgDev := config.Config{AuthZBreakglass: true, AuthMode: "dev"}
+	bgProd := config.Config{AuthZBreakglass: true, AuthMode: "production"}
+	bgProdStrict := config.Config{AuthZBreakglass: true, AuthMode: "production-strict"}
+
 	cases := []struct {
 		name    string
 		cfg     config.Config
@@ -130,6 +139,9 @@ func TestValidateSecurityConfig(t *testing.T) {
 		{"public mTLS off, no breakglass → err", noMTLS, true},
 		{"internal mTLS off, no breakglass → err", noInternalMTLS, true},
 		{"breakglass bypasses all requirements → ok", config.Config{AuthZBreakglass: true}, false},
+		{"breakglass + dev → ok (emergency-only, non-prod)", bgDev, false},
+		{"breakglass + production → err (bypass not honored in prod)", bgProd, true},
+		{"breakglass + production-strict → err (bypass not honored in prod)", bgProdStrict, true},
 		{"production without trusted forwarders → err", prodNoFwd, true},
 		{"production with trusted forwarder → ok", prodWithFwd, false},
 		{"production-strict without trusted forwarders → err", prodStrictNoFwd, true},
