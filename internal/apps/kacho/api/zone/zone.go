@@ -26,7 +26,6 @@ import (
 	geov1 "github.com/PRO-Robotech/kacho-proto/gen/go/kacho/cloud/geo/v1"
 
 	"github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/shared/lro"
-	"github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/shared/serviceerr"
 	"github.com/PRO-Robotech/kacho-geo/internal/domain"
 	geoerrors "github.com/PRO-Robotech/kacho-geo/internal/errors"
 )
@@ -46,34 +45,64 @@ type UpdateParams struct {
 	Status   *domain.ZoneStatus
 }
 
-// Repo — port-интерфейс к таблице zones (read + admin CRUD). Реализуется
-// internal/repo/kacho/pg.ZoneRepo; для unit-тестов подменяется repomock.
+// Reader — read-порт справочника zones (Get/List). CQRS-разделён с Writer:
+// read-side можно связать с read-replica pool независимо от writer-side.
+type Reader interface {
+	Get(ctx context.Context, id string) (*domain.Zone, error)
+	List(ctx context.Context, p Pagination) ([]*domain.Zone, string, error)
+}
+
+// Writer — write-порт admin-мутаций zones (Insert/Update/Delete + outbox-emit в
+// writer-tx). Отделён от Reader (write идёт на primary).
 //
 // Update — атомарный single-statement (UPDATE … RETURNING) по UpdateParams;
 // 0 rows из RETURNING → ErrNotFound.
-type Repo interface {
-	Get(ctx context.Context, id string) (*domain.Zone, error)
-	List(ctx context.Context, p Pagination) ([]*domain.Zone, string, error)
+type Writer interface {
 	Insert(ctx context.Context, z *domain.Zone) (*domain.Zone, error)
 	Update(ctx context.Context, id string, p UpdateParams) (*domain.Zone, error)
 	Delete(ctx context.Context, id string) error
 }
 
-// UseCase — бизнес-логика Zone поверх порта Repo и LRO-стека operations.
-type UseCase struct {
-	repo Repo
-	ops  operations.Repo
+// Repo — композит Reader+Writer для adapter'а, реализующего обе стороны
+// (pg.ZoneRepo). Composition root связывает reader/writer раздельно.
+type Repo interface {
+	Reader
+	Writer
 }
 
-// New собирает UseCase для Zone. ops — corelib LRO-репозиторий operations-таблицы.
-func New(repo Repo, ops operations.Repo) *UseCase { return &UseCase{repo: repo, ops: ops} }
+// ErrToStatus маппит доменную/repo sentinel-ошибку в transport-status,
+// сохраняемый async-worker'ом в Operation.error. Инжектится composition root'ом
+// (serviceerr.ToStatus) — use-case не выбирает transport-коды сам: выбор кода —
+// transport-concern, он остаётся во владении handler/transport-слоя. Пустой (nil)
+// mapper → identity (worker сведёт к INTERNAL) — защита от паники в неполном
+// wiring; production всегда инжектит реальный.
+type ErrToStatus func(error) error
+
+// UseCase — бизнес-логика Zone поверх CQRS-портов Reader/Writer, LRO-стека
+// operations и инжектированного transport-mapper'а errStatus.
+type UseCase struct {
+	reader    Reader
+	writer    Writer
+	ops       operations.Repo
+	errStatus ErrToStatus
+}
+
+// New собирает UseCase для Zone. reader/writer — CQRS-разделённые порты
+// (composition root может связать reader с репликой); ops — corelib LRO-репозиторий
+// operations-таблицы; errStatus — инжектированный маппер sentinel→gRPC-status.
+func New(reader Reader, writer Writer, ops operations.Repo, errStatus ErrToStatus) *UseCase {
+	if errStatus == nil {
+		errStatus = func(err error) error { return err }
+	}
+	return &UseCase{reader: reader, writer: writer, ops: ops, errStatus: errStatus}
+}
 
 // Get возвращает Zone по id.
 func (u *UseCase) Get(ctx context.Context, id string) (*domain.Zone, error) {
 	if id == "" {
 		return nil, geoerrors.ErrInvalidArg
 	}
-	z, err := u.repo.Get(ctx, id)
+	z, err := u.reader.Get(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +116,7 @@ func (u *UseCase) List(ctx context.Context, p Pagination) ([]*domain.Zone, strin
 		return nil, "", err
 	}
 	p.PageSize = size
-	return u.repo.List(ctx, p)
+	return u.reader.List(ctx, p)
 }
 
 // Create принимает запрос на создание Zone (admin-only) и возвращает Operation.
@@ -110,9 +139,9 @@ func (u *UseCase) Create(ctx context.Context, id, regionID, name string, st doma
 		return nil, err
 	}
 	operations.Run(ctx, u.ops, op.ID, func(ctx context.Context) (*anypb.Any, error) {
-		created, derr := u.repo.Insert(ctx, &z)
+		created, derr := u.writer.Insert(ctx, &z)
 		if derr != nil {
-			return nil, serviceerr.ToStatus(derr)
+			return nil, u.errStatus(derr)
 		}
 		return marshalZone(created)
 	})
@@ -153,9 +182,9 @@ func (u *UseCase) Update(ctx context.Context, id, regionID, name string, st doma
 		return nil, err
 	}
 	operations.Run(ctx, u.ops, op.ID, func(ctx context.Context) (*anypb.Any, error) {
-		updated, derr := u.repo.Update(ctx, id, p)
+		updated, derr := u.writer.Update(ctx, id, p)
 		if derr != nil {
-			return nil, serviceerr.ToStatus(derr)
+			return nil, u.errStatus(derr)
 		}
 		return marshalZone(updated)
 	})
@@ -179,8 +208,8 @@ func (u *UseCase) Delete(ctx context.Context, id string) (*operations.Operation,
 		return nil, err
 	}
 	operations.Run(ctx, u.ops, op.ID, func(ctx context.Context) (*anypb.Any, error) {
-		if derr := u.repo.Delete(ctx, id); derr != nil {
-			return nil, serviceerr.ToStatus(derr)
+		if derr := u.writer.Delete(ctx, id); derr != nil {
+			return nil, u.errStatus(derr)
 		}
 		return anypb.New(&emptypb.Empty{})
 	})

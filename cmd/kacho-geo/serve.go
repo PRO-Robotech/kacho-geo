@@ -28,6 +28,7 @@ import (
 	region "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/region"
 	zone "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/zone"
 	"github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/config"
+	"github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/shared/serviceerr"
 	"github.com/PRO-Robotech/kacho-geo/internal/check"
 	"github.com/PRO-Robotech/kacho-geo/internal/handler"
 	"github.com/PRO-Robotech/kacho-geo/internal/repo/kacho/pg"
@@ -63,8 +64,23 @@ func runServe(cfg config.Config) error {
 	opsRepo := operations.NewRepo(pool, "kacho_geo")
 
 	// ── use-cases (repo → use-case → handler) ──────────────────────────────
-	regionUC := region.New(pg.NewRegionRepo(pool), opsRepo)
-	zoneUC := zone.New(pg.NewZoneRepo(pool), opsRepo)
+	// CQRS-порты Reader/Writer связываются раздельно (сейчас обе стороны — один
+	// pg-adapter поверх primary-pool; read-side можно позже перецепить на
+	// read-replica pool, не трогая use-case). errStatus — transport-mapper
+	// sentinel→gRPC-status, инжектится из handler-слоя (serviceerr.ToStatus): выбор
+	// кода — transport-concern, use-case его не выбирает.
+	regionRepo := pg.NewRegionRepo(pool)
+	regionUC := region.New(regionRepo, regionRepo, opsRepo, serviceerr.ToStatus)
+	zoneRepo := pg.NewZoneRepo(pool)
+	zoneUC := zone.New(zoneRepo, zoneRepo, opsRepo, serviceerr.ToStatus)
+
+	// ── durable LRO recovery: доменный resolver + corelib-reconciler поверх
+	// schema kacho_geo. RecoverAll прогоняется ЗДЕСЬ (до приёма трафика) —
+	// осиротевшие после краха процесса done=false строки разрешаются в терминал
+	// по committed-реальности ресурса; периодический Run(ctx) ниже — backstop.
+	// Это тот backstop, который обещает комментарий про shutdown-drain (worker
+	// добирает только свои in-flight; crash mid-op закрывает reconciler).
+	lroReconciler := startLRORecovery(ctx, pool, regionRepo, zoneRepo, logger)
 
 	// ── authz: per-RPC OpenFGA Check на ОБОИХ листенерах (AuthN+AuthZ везде —
 	// internal :9091 НЕ освобожден). Ребро geo→iam Check дозванивается в
@@ -94,21 +110,32 @@ func runServe(cfg config.Config) error {
 	})
 
 	// ── цепочки интерсепторов ──────────────────────────────────────────────
-	// Public (:9090): principal-extract → authz Check.
-	publicUnary := []grpc.UnaryServerInterceptor{grpcsrv.UnaryPrincipalExtract()}
-	publicStream := []grpc.StreamServerInterceptor{grpcsrv.StreamPrincipalExtract()}
-	// Internal (:9091): cert-identity → trusted-principal (anti-spoof) →
-	// authz Check. ТОТ ЖЕ per-RPC authz, что и на public — internal не
-	// доверенный (defense-in-depth против lateral movement).
-	//
 	// WithTrustedForwarders ограничивает форвард end-user principal'а allow-list'ом
 	// SAN'ов (api-gateway SA): verified-но-не-форвардер peer (внутренний сервис со
-	// своим валидным client-cert'ом) НЕ может выдать себя за пользователя и
-	// эскалировать до admin-CRUD Region/Zone (confused-deputy). Единственный
-	// легитимный форвардер здесь — api-gateway; consumer'ы vpc/compute/nlb ходят в
-	// публичный :9090. Пустой allow-list (default) сохраняет прежнее «любой verified
-	// peer доверен» (dev back-compat) — enforce задаётся конфигом в production.
+	// своим валидным client-cert'ом) НЕ может выдать себя за пользователя. Пустой
+	// allow-list (default) сохраняет прежнее «любой verified peer доверен» (dev
+	// back-compat) — enforce задаётся конфигом в production.
 	forwarders := cfg.AuthZTrustedForwarderSANs
+	// Public (:9090): cert-identity → trusted-principal (anti-spoof) → authz Check.
+	// Публичная read-only поверхность (Region/Zone.Get/List) тоже trust-gated: без
+	// этого любой mTLS-verified peer мог выставить произвольный x-kacho-principal-*
+	// header и авторизоваться как чужой viewer-principal (principal-spoofing,
+	// CWE-290). Легитимный форвардер end-user principal'а — api-gateway;
+	// consumer'ы vpc/compute/nlb ходят сюда со СВОИМ cert'ом (их principal — не
+	// форвардится, снимается → authz видит их cert-identity/system-fallback).
+	publicUnary := []grpc.UnaryServerInterceptor{
+		grpcsrv.UnaryCertIdentityExtract(),
+		grpcsrv.UnaryTrustedPrincipalExtract(grpcsrv.WithTrustedForwarders(forwarders...)),
+	}
+	publicStream := []grpc.StreamServerInterceptor{
+		grpcsrv.StreamCertIdentityExtract(),
+		grpcsrv.StreamTrustedPrincipalExtract(grpcsrv.WithTrustedForwarders(forwarders...)),
+	}
+	// Internal (:9091): cert-identity → trusted-principal (anti-spoof) →
+	// authz Check. ТОТ ЖЕ per-RPC authz, что и на public — internal не
+	// доверенный (defense-in-depth против lateral movement). Единственный
+	// легитимный форвардер здесь — api-gateway; эскалация verified-но-не-форвардер
+	// peer'а до admin-CRUD Region/Zone (confused-deputy) закрыта allow-list'ом.
 	internalUnary := []grpc.UnaryServerInterceptor{
 		grpcsrv.UnaryCertIdentityExtract(),
 		grpcsrv.UnaryTrustedPrincipalExtract(grpcsrv.WithTrustedForwarders(forwarders...)),
@@ -206,6 +233,11 @@ func runServe(cfg config.Config) error {
 		}
 	}()
 
+	// Периодический backstop-sweep reconciler'а: sweep осиротевших LRO каждые
+	// geoReconcileInterval до отмены ctx (SIGTERM/SIGINT). Останавливается сам по
+	// ctx.Done() — не требует отдельного drain'а.
+	go lroReconciler.Run(ctx)
+
 	go func() {
 		if serr := internalSrv.Serve(internalListener); serr != nil && !errors.Is(serr, grpc.ErrServerStopped) {
 			logger.Error("internal grpc server stopped", "err", serr)
@@ -229,6 +261,13 @@ func validateAuthMode(cfg config.Config, logger *slog.Logger) error {
 		}
 		return nil
 	case "production":
+		// В production plaintext-соединение до БД запрещено: sslmode=disable (и
+		// пустой → libpq-дефолт disable) отвергаем. Конкретный TLS-режим
+		// (require|verify-ca|verify-full) — на усмотрение оператора; строгую
+		// проверку сертификата требует production-strict ниже.
+		if cfg.DBSSLMode == "" || cfg.DBSSLMode == "disable" {
+			return fmt.Errorf("production mode: KACHO_GEO_DB_SSLMODE must not be disable (got %q); use require|verify-ca|verify-full", cfg.DBSSLMode)
+		}
 		return nil
 	case "production-strict":
 		switch cfg.DBSSLMode {

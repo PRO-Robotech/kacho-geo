@@ -17,9 +17,11 @@ import (
 
 	region "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/region"
 	zone "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/zone"
+	"github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/shared/serviceerr"
 	"github.com/PRO-Robotech/kacho-geo/internal/domain"
 	geoerrors "github.com/PRO-Robotech/kacho-geo/internal/errors"
 	"github.com/PRO-Robotech/kacho-geo/internal/handler"
+	"github.com/PRO-Robotech/kacho-geo/internal/repo/kacho/dberr"
 	"github.com/PRO-Robotech/kacho-geo/internal/repo/kacho/repomock"
 )
 
@@ -41,11 +43,12 @@ func awaitOpFromHandler(t *testing.T, oh *handler.OperationHandler, opID string)
 }
 
 func TestRegionHandler_Get_notFound_mapsToNotFound(t *testing.T) {
-	uc := region.New(&repomock.RegionRepo{
+	mock := &repomock.RegionRepo{
 		GetFunc: func(_ context.Context, id string) (*domain.Region, error) {
-			return nil, geoerrors.Wrap(stderrors.New("x"), "Region", id) // путь ErrInternal
+			return nil, dberr.Wrap(stderrors.New("x"), "Region", id) // путь ErrInternal
 		},
-	}, repomock.NewOpsRepo())
+	}
+	uc := region.New(mock, mock, repomock.NewOpsRepo(), serviceerr.ToStatus)
 	h := handler.NewRegionHandler(uc)
 	_, err := h.Get(context.Background(), &geov1.GetRegionRequest{RegionId: "x"})
 	if status.Code(err) != codes.Internal {
@@ -54,7 +57,7 @@ func TestRegionHandler_Get_notFound_mapsToNotFound(t *testing.T) {
 }
 
 func TestRegionHandler_Get_emptyID_invalidArgument(t *testing.T) {
-	h := handler.NewRegionHandler(region.New(&repomock.RegionRepo{}, repomock.NewOpsRepo()))
+	h := handler.NewRegionHandler(region.New(&repomock.RegionRepo{}, &repomock.RegionRepo{}, repomock.NewOpsRepo(), serviceerr.ToStatus))
 	_, err := h.Get(context.Background(), &geov1.GetRegionRequest{RegionId: ""})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("want INVALID_ARGUMENT for empty id, got %v", err)
@@ -62,11 +65,12 @@ func TestRegionHandler_Get_emptyID_invalidArgument(t *testing.T) {
 }
 
 func TestRegionHandler_Get_happy(t *testing.T) {
-	uc := region.New(&repomock.RegionRepo{
+	mock := &repomock.RegionRepo{
 		GetFunc: func(_ context.Context, id string) (*domain.Region, error) {
 			return &domain.Region{ID: id, Name: "Region 1"}, nil
 		},
-	}, repomock.NewOpsRepo())
+	}
+	uc := region.New(mock, mock, repomock.NewOpsRepo(), serviceerr.ToStatus)
 	h := handler.NewRegionHandler(uc)
 	resp, err := h.Get(context.Background(), &geov1.GetRegionRequest{RegionId: "region-1"})
 	if err != nil {
@@ -78,11 +82,12 @@ func TestRegionHandler_Get_happy(t *testing.T) {
 }
 
 func TestZoneHandler_Get_happy_statusMapped(t *testing.T) {
-	uc := zone.New(&repomock.ZoneRepo{
+	mock := &repomock.ZoneRepo{
 		GetFunc: func(_ context.Context, id string) (*domain.Zone, error) {
 			return &domain.Zone{ID: id, RegionID: "region-1", Status: domain.ZoneStatusUp}, nil
 		},
-	}, repomock.NewOpsRepo())
+	}
+	uc := zone.New(mock, mock, repomock.NewOpsRepo(), serviceerr.ToStatus)
 	h := handler.NewZoneHandler(uc)
 	resp, err := h.Get(context.Background(), &geov1.GetZoneRequest{ZoneId: "region-1-a"})
 	if err != nil {
@@ -96,7 +101,7 @@ func TestZoneHandler_Get_happy_statusMapped(t *testing.T) {
 // TestInternalRegionHandler_Delete_emptyID_syncInvalidArgument — пустой id
 // отвергается синхронно (InvalidArgument), Operation не создаётся.
 func TestInternalRegionHandler_Delete_emptyID_syncInvalidArgument(t *testing.T) {
-	uc := region.New(&repomock.RegionRepo{}, repomock.NewOpsRepo())
+	uc := region.New(&repomock.RegionRepo{}, &repomock.RegionRepo{}, repomock.NewOpsRepo(), serviceerr.ToStatus)
 	h := handler.NewInternalRegionHandler(uc)
 	_, err := h.Delete(context.Background(), &geov1.DeleteRegionRequest{RegionId: ""})
 	if status.Code(err) != codes.InvalidArgument {
@@ -108,9 +113,10 @@ func TestInternalRegionHandler_Delete_emptyID_syncInvalidArgument(t *testing.T) 
 // доезжает как Operation.error FAILED_PRECONDITION (async).
 func TestInternalRegionHandler_Delete_failedPrecondition(t *testing.T) {
 	ops := repomock.NewOpsRepo()
-	uc := region.New(&repomock.RegionRepo{
+	mock := &repomock.RegionRepo{
 		DeleteFunc: func(_ context.Context, _ string) error { return geoerrors.ErrFailedPrecondition },
-	}, ops)
+	}
+	uc := region.New(mock, mock, ops, serviceerr.ToStatus)
 	h := handler.NewInternalRegionHandler(uc)
 	oh := handler.NewOperationHandler(ops)
 	op, err := h.Delete(context.Background(), &geov1.DeleteRegionRequest{RegionId: "region-1"})
@@ -130,9 +136,10 @@ func TestInternalRegionHandler_Delete_failedPrecondition(t *testing.T) {
 // done → response=Zone.
 func TestInternalZoneHandler_Create_happy(t *testing.T) {
 	ops := repomock.NewOpsRepo()
-	uc := zone.New(&repomock.ZoneRepo{
+	mock := &repomock.ZoneRepo{
 		InsertFunc: func(_ context.Context, z *domain.Zone) (*domain.Zone, error) { return z, nil },
-	}, ops)
+	}
+	uc := zone.New(mock, mock, ops, serviceerr.ToStatus)
 	h := handler.NewInternalZoneHandler(uc)
 	oh := handler.NewOperationHandler(ops)
 	op, err := h.Create(context.Background(), &geov1.CreateZoneRequest{

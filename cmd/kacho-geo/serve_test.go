@@ -37,7 +37,12 @@ func TestValidateAuthMode(t *testing.T) {
 		wantErr bool
 	}{
 		{"dev", config.Config{AuthMode: "dev"}, false},
-		{"production", config.Config{AuthMode: "production"}, false},
+		{"dev + ssl disable → ok (dev unaffected)", config.Config{AuthMode: "dev", DBSSLMode: "disable"}, false},
+		{"dev + ssl empty → ok (dev unaffected)", config.Config{AuthMode: "dev", DBSSLMode: ""}, false},
+		{"production + ssl require → ok", config.Config{AuthMode: "production", DBSSLMode: "require"}, false},
+		{"production + ssl verify-full → ok", config.Config{AuthMode: "production", DBSSLMode: "verify-full"}, false},
+		{"production + ssl disable → err", config.Config{AuthMode: "production", DBSSLMode: "disable"}, true},
+		{"production + ssl empty → err", config.Config{AuthMode: "production", DBSSLMode: ""}, true},
 		{"production-strict + ssl require", config.Config{AuthMode: "production-strict", DBSSLMode: "require"}, false},
 		{"production-strict + ssl disable → err", config.Config{AuthMode: "production-strict", DBSSLMode: "disable"}, true},
 		{"unknown mode → err", config.Config{AuthMode: "wat"}, true},

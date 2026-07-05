@@ -17,6 +17,7 @@ import (
 	geov1 "github.com/PRO-Robotech/kacho-proto/gen/go/kacho/cloud/geo/v1"
 
 	region "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/region"
+	"github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/shared/serviceerr"
 	zone "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/zone"
 	"github.com/PRO-Robotech/kacho-geo/internal/domain"
 	"github.com/PRO-Robotech/kacho-geo/internal/repo/kacho/pg"
@@ -99,7 +100,7 @@ func TestAsyncRegionCreate_Operation(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
 	ops := operations.NewRepo(pool, "kacho_geo")
-	uc := region.New(pg.NewRegionRepo(pool), ops)
+	uc := region.New(pg.NewRegionRepo(pool), pg.NewRegionRepo(pool), ops, serviceerr.ToStatus)
 
 	op, err := uc.Create(ctx, "region-async-1", "Region Async One")
 	require.NoError(t, err, "Create returns Operation synchronously (no error on accept)")
@@ -125,7 +126,7 @@ func TestAsyncRegionUpdate_Operation(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
 	ops := operations.NewRepo(pool, "kacho_geo")
-	uc := region.New(pg.NewRegionRepo(pool), ops)
+	uc := region.New(pg.NewRegionRepo(pool), pg.NewRegionRepo(pool), ops, serviceerr.ToStatus)
 
 	op, err := uc.Create(ctx, "region-async-1", "Region Async One")
 	require.NoError(t, err)
@@ -144,7 +145,7 @@ func TestAsyncRegionDelete_Operation(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
 	ops := operations.NewRepo(pool, "kacho_geo")
-	uc := region.New(pg.NewRegionRepo(pool), ops)
+	uc := region.New(pg.NewRegionRepo(pool), pg.NewRegionRepo(pool), ops, serviceerr.ToStatus)
 
 	op, err := uc.Create(ctx, "region-async-del", "to-be-deleted")
 	require.NoError(t, err)
@@ -166,8 +167,8 @@ func TestAsyncZoneCreate_Operation(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
 	ops := operations.NewRepo(pool, "kacho_geo")
-	ruc := region.New(pg.NewRegionRepo(pool), ops)
-	zuc := zone.New(pg.NewZoneRepo(pool), ops)
+	ruc := region.New(pg.NewRegionRepo(pool), pg.NewRegionRepo(pool), ops, serviceerr.ToStatus)
+	zuc := zone.New(pg.NewZoneRepo(pool), pg.NewZoneRepo(pool), ops, serviceerr.ToStatus)
 
 	rop, err := ruc.Create(ctx, "region-async-1", "Region Async One")
 	require.NoError(t, err)
@@ -190,8 +191,8 @@ func TestAsyncZoneUpdateDelete_Operation(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
 	ops := operations.NewRepo(pool, "kacho_geo")
-	ruc := region.New(pg.NewRegionRepo(pool), ops)
-	zuc := zone.New(pg.NewZoneRepo(pool), ops)
+	ruc := region.New(pg.NewRegionRepo(pool), pg.NewRegionRepo(pool), ops, serviceerr.ToStatus)
+	zuc := zone.New(pg.NewZoneRepo(pool), pg.NewZoneRepo(pool), ops, serviceerr.ToStatus)
 
 	seedRegion(t, ops, ruc, "region-async-1", "R")
 	seedZone(t, ops, zuc, "region-async-1-a", "region-async-1", "Zone Async One A", geoZoneStatusUp())
@@ -219,8 +220,8 @@ func TestAsyncMalformedID_SyncInvalidArgument(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
 	ops := operations.NewRepo(pool, "kacho_geo")
-	ruc := region.New(pg.NewRegionRepo(pool), ops)
-	zuc := zone.New(pg.NewZoneRepo(pool), ops)
+	ruc := region.New(pg.NewRegionRepo(pool), pg.NewRegionRepo(pool), ops, serviceerr.ToStatus)
+	zuc := zone.New(pg.NewZoneRepo(pool), pg.NewZoneRepo(pool), ops, serviceerr.ToStatus)
 
 	_, err := ruc.Update(ctx, "", "x")
 	require.Error(t, err, "empty region_id must fail synchronously")
@@ -237,8 +238,8 @@ func TestAsyncNotFound_OperationError(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
 	ops := operations.NewRepo(pool, "kacho_geo")
-	ruc := region.New(pg.NewRegionRepo(pool), ops)
-	zuc := zone.New(pg.NewZoneRepo(pool), ops)
+	ruc := region.New(pg.NewRegionRepo(pool), pg.NewRegionRepo(pool), ops, serviceerr.ToStatus)
+	zuc := zone.New(pg.NewZoneRepo(pool), pg.NewZoneRepo(pool), ops, serviceerr.ToStatus)
 
 	uop, err := ruc.Update(ctx, "region-absent", "x")
 	require.NoError(t, err, "well-formed id accepted; failure arrives async")
@@ -260,8 +261,8 @@ func TestAsyncRegionDeleteWithZones_FailedPrecondition(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
 	ops := operations.NewRepo(pool, "kacho_geo")
-	ruc := region.New(pg.NewRegionRepo(pool), ops)
-	zuc := zone.New(pg.NewZoneRepo(pool), ops)
+	ruc := region.New(pg.NewRegionRepo(pool), pg.NewRegionRepo(pool), ops, serviceerr.ToStatus)
+	zuc := zone.New(pg.NewZoneRepo(pool), pg.NewZoneRepo(pool), ops, serviceerr.ToStatus)
 
 	seedRegion(t, ops, ruc, "region-async-busy", "Busy")
 	seedZone(t, ops, zuc, "region-async-busy-a", "region-async-busy", "Z", geoZoneStatusUp())
@@ -282,7 +283,7 @@ func TestAsyncZoneCreateBadRegion_FailedPrecondition(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
 	ops := operations.NewRepo(pool, "kacho_geo")
-	zuc := zone.New(pg.NewZoneRepo(pool), ops)
+	zuc := zone.New(pg.NewZoneRepo(pool), pg.NewZoneRepo(pool), ops, serviceerr.ToStatus)
 
 	zop, err := zuc.Create(ctx, "region-ghost-a", "region-ghost", "Ghost Zone", geoZoneStatusUp())
 	require.NoError(t, err)
@@ -299,7 +300,7 @@ func TestAsyncIdempotentRePollAndSecondDelete(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
 	ops := operations.NewRepo(pool, "kacho_geo")
-	ruc := region.New(pg.NewRegionRepo(pool), ops)
+	ruc := region.New(pg.NewRegionRepo(pool), pg.NewRegionRepo(pool), ops, serviceerr.ToStatus)
 
 	seedRegion(t, ops, ruc, "region-async-idem", "Idem")
 	op1, err := ruc.Delete(ctx, "region-async-idem")
@@ -326,7 +327,7 @@ func TestAsyncConcurrentRegionCreate_OneWinner(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
 	ops := operations.NewRepo(pool, "kacho_geo")
-	uc := region.New(pg.NewRegionRepo(pool), ops)
+	uc := region.New(pg.NewRegionRepo(pool), pg.NewRegionRepo(pool), ops, serviceerr.ToStatus)
 
 	const n = 8
 	var wg sync.WaitGroup

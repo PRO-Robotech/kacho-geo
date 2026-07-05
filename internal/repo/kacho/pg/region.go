@@ -21,6 +21,7 @@ import (
 	region "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/region"
 	"github.com/PRO-Robotech/kacho-geo/internal/domain"
 	geoerrors "github.com/PRO-Robotech/kacho-geo/internal/errors"
+	"github.com/PRO-Robotech/kacho-geo/internal/repo/kacho/dberr"
 )
 
 // outboxTable — таблица audit-outbox для admin-мутаций kacho-geo (конвенция
@@ -53,7 +54,7 @@ func (r *RegionRepo) Get(ctx context.Context, id string) (*domain.Region, error)
 	err := r.pool.QueryRow(ctx, `SELECT id, name, created_at FROM regions WHERE id = $1`, id).
 		Scan(&rg.ID, &rg.Name, &rg.CreatedAt)
 	if err != nil {
-		return nil, geoerrors.Wrap(err, "Region", id)
+		return nil, dberr.Wrap(err, "Region", id)
 	}
 	return &rg, nil
 }
@@ -76,19 +77,19 @@ func (r *RegionRepo) List(ctx context.Context, p region.Pagination) ([]*domain.R
 	args = append(args, pageSize+1)
 	rows, err := r.pool.Query(ctx, q, args...)
 	if err != nil {
-		return nil, "", geoerrors.Wrap(err, "Region", "")
+		return nil, "", dberr.Wrap(err, "Region", "")
 	}
 	defer rows.Close()
 	var out []*domain.Region
 	for rows.Next() {
 		var rg domain.Region
 		if err := rows.Scan(&rg.ID, &rg.Name, &rg.CreatedAt); err != nil {
-			return nil, "", geoerrors.Wrap(err, "Region", "")
+			return nil, "", dberr.Wrap(err, "Region", "")
 		}
 		out = append(out, &rg)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, "", geoerrors.Wrap(err, "Region", "")
+		return nil, "", dberr.Wrap(err, "Region", "")
 	}
 	var next string
 	if int64(len(out)) > pageSize {
@@ -110,7 +111,7 @@ func (r *RegionRepo) Insert(ctx context.Context, rg *domain.Region) (*domain.Reg
 			rg.ID, rg.Name, time.Now().UTC()).
 			Scan(&created.ID, &created.Name, &created.CreatedAt)
 		if serr != nil {
-			return geoerrors.Wrap(serr, "Region", rg.ID)
+			return dberr.Wrap(serr, "Region", rg.ID)
 		}
 		return outbox.Emit(ctx, tx, outboxTable, "Region", created.ID, "CREATED", map[string]any{
 			"id":    created.ID,
@@ -136,7 +137,7 @@ func (r *RegionRepo) Update(ctx context.Context, id string, name *string) (*doma
 			id, name).
 			Scan(&updated.ID, &updated.Name, &updated.CreatedAt)
 		if serr != nil {
-			return geoerrors.Wrap(serr, "Region", id)
+			return dberr.Wrap(serr, "Region", id)
 		}
 		return outbox.Emit(ctx, tx, outboxTable, "Region", updated.ID, "UPDATED", map[string]any{
 			"id":    updated.ID,
@@ -157,7 +158,7 @@ func (r *RegionRepo) Delete(ctx context.Context, id string) error {
 	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `DELETE FROM regions WHERE id = $1`, id)
 		if err != nil {
-			return geoerrors.Wrap(err, "Region", id)
+			return dberr.Wrap(err, "Region", id)
 		}
 		if tag.RowsAffected() == 0 {
 			return fmt.Errorf("%w: Region %s not found", geoerrors.ErrNotFound, id)

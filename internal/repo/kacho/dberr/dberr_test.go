@@ -1,7 +1,7 @@
 // Copyright (c) PRO-Robotech
 // SPDX-License-Identifier: BUSL-1.1
 
-package errors_test
+package dberr_test
 
 import (
 	stderrors "errors"
@@ -11,11 +11,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/PRO-Robotech/kacho-geo/internal/repo/kacho/dberr"
+
 	geoerrors "github.com/PRO-Robotech/kacho-geo/internal/errors"
 )
 
 func TestWrap_noRows_notFound(t *testing.T) {
-	err := geoerrors.Wrap(pgx.ErrNoRows, "Region", "region-1")
+	err := dberr.Wrap(pgx.ErrNoRows, "Region", "region-1")
 	if !stderrors.Is(err, geoerrors.ErrNotFound) {
 		t.Fatalf("Wrap(ErrNoRows) = %v, want ErrNotFound", err)
 	}
@@ -30,7 +32,7 @@ func TestWrap_noRows_notFound(t *testing.T) {
 // для parent-delete).
 func TestWrap_fkViolation_directionNeutral(t *testing.T) {
 	pgErr := &pgconn.PgError{Code: "23503"}
-	err := geoerrors.Wrap(pgErr, "Zone", "region-1-a")
+	err := dberr.Wrap(pgErr, "Zone", "region-1-a")
 	if !stderrors.Is(err, geoerrors.ErrFailedPrecondition) {
 		t.Fatalf("Wrap(23503) = %v, want ErrFailedPrecondition", err)
 	}
@@ -44,8 +46,19 @@ func TestWrap_fkViolation_directionNeutral(t *testing.T) {
 
 func TestWrap_checkViolation_invalidArg(t *testing.T) {
 	pgErr := &pgconn.PgError{Code: "23514"}
-	err := geoerrors.Wrap(pgErr, "Zone", "z-1")
+	err := dberr.Wrap(pgErr, "Zone", "z-1")
 	if !stderrors.Is(err, geoerrors.ErrInvalidArg) {
 		t.Fatalf("Wrap(23514) = %v, want ErrInvalidArg", err)
+	}
+}
+
+// TestWrap_uncategorized_internal — сырой не-pgx-текст не течёт наружу.
+func TestWrap_uncategorized_internal(t *testing.T) {
+	err := dberr.Wrap(stderrors.New("raw driver text"), "Region", "r-1")
+	if !stderrors.Is(err, geoerrors.ErrInternal) {
+		t.Fatalf("Wrap(raw) = %v, want ErrInternal", err)
+	}
+	if strings.Contains(err.Error(), "raw driver text") {
+		t.Fatalf("Wrap(raw) leaked driver text: %q", err.Error())
 	}
 }

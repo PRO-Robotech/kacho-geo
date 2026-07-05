@@ -6,6 +6,7 @@ package pg_test
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	stderrors "errors"
 	"sync"
 	"testing"
@@ -15,6 +16,8 @@ import (
 	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/require"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	coredb "github.com/PRO-Robotech/kacho-corelib/db"
 
@@ -271,6 +274,109 @@ func TestRegionListPagination(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, page2, 1)
 	require.Empty(t, token2, "empty page_token expected on last page")
+}
+
+// TestZoneUpdateFK_NoSuchRegion — Zone.Update, перенаправляющий region_id на
+// несуществующий регион, упирается в FK 23503 zones→regions → FailedPrecondition.
+// Транзакция откатывается целиком, поэтому region_id остаётся прежним (partial
+// re-point региона Create-путь тестируется отдельно; здесь — Update-путь).
+func TestZoneUpdateFK_NoSuchRegion(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	rr := pg.NewRegionRepo(pool)
+	zr := pg.NewZoneRepo(pool)
+
+	_, err := rr.Insert(ctx, &domain.Region{ID: "region-1", Name: "Region 1"})
+	require.NoError(t, err)
+	_, err = zr.Insert(ctx, &domain.Zone{ID: "region-1-a", RegionID: "region-1", Name: "Zone A", Status: domain.ZoneStatusUp})
+	require.NoError(t, err)
+
+	ghost := "no-such-region"
+	_, uerr := zr.Update(ctx, "region-1-a", zone.UpdateParams{RegionID: &ghost})
+	require.True(t, stderrors.Is(uerr, geoerrors.ErrFailedPrecondition),
+		"re-point region_id to a ghost region must surface FK 23503 as FailedPrecondition, got %v", uerr)
+
+	// region_id не изменился — UPDATE откатился целиком.
+	got, gerr := zr.Get(ctx, "region-1-a")
+	require.NoError(t, gerr)
+	require.Equal(t, "region-1", got.RegionID, "region_id must be unchanged after a failed re-point")
+}
+
+// TestZoneInsertDuplicate — повторный INSERT той же зоны → ErrAlreadyExists
+// (UNIQUE PK). Zone Insert — отдельный от Region код-путь (свой outbox emit),
+// поэтому дублируем проверку явно, а не полагаемся на region-parity.
+func TestZoneInsertDuplicate(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	rr := pg.NewRegionRepo(pool)
+	zr := pg.NewZoneRepo(pool)
+
+	_, err := rr.Insert(ctx, &domain.Region{ID: "region-1", Name: "Region 1"})
+	require.NoError(t, err)
+	_, err = zr.Insert(ctx, &domain.Zone{ID: "region-1-a", RegionID: "region-1", Status: domain.ZoneStatusUp})
+	require.NoError(t, err)
+	_, err = zr.Insert(ctx, &domain.Zone{ID: "region-1-a", RegionID: "region-1", Status: domain.ZoneStatusUp})
+	require.True(t, stderrors.Is(err, geoerrors.ErrAlreadyExists), "got %v", err)
+}
+
+// TestConcurrentZoneInsert_OneWins — UNIQUE PK zones под concurrency: ровно один
+// INSERT одной и той же зоны выигрывает, остальные получают ErrAlreadyExists
+// (DB-уровень, без software-precheck; parity с TestConcurrentRegionInsert_OneWins).
+func TestConcurrentZoneInsert_OneWins(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	rr := pg.NewRegionRepo(pool)
+	zr := pg.NewZoneRepo(pool)
+
+	_, err := rr.Insert(ctx, &domain.Region{ID: "region-1", Name: "Region 1"})
+	require.NoError(t, err)
+
+	const n = 8
+	var wg sync.WaitGroup
+	wg.Add(n)
+	var mu sync.Mutex
+	ok, dup := 0, 0
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			_, ierr := zr.Insert(ctx, &domain.Zone{ID: "race-region-a", RegionID: "region-1", Status: domain.ZoneStatusUp})
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case ierr == nil:
+				ok++
+			case stderrors.Is(ierr, geoerrors.ErrAlreadyExists):
+				dup++
+			default:
+				t.Errorf("unexpected err: %v", ierr)
+			}
+		}()
+	}
+	wg.Wait()
+	require.Equal(t, 1, ok, "exactly one INSERT must win")
+	require.Equal(t, n-1, dup, "the rest must get ErrAlreadyExists")
+}
+
+// TestList_malformedPageToken_invalidArgument — битый page_token (не-base64,
+// битый JSON, пустой cursor id) в Region/Zone List → gRPC InvalidArgument,
+// не Internal и без утечки внутренней decode-детали как отдельного кода.
+func TestList_malformedPageToken_invalidArgument(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	rr := pg.NewRegionRepo(pool)
+	zr := pg.NewZoneRepo(pool)
+
+	badTokens := []string{
+		"!!!notbase64",                                  // не base64
+		base64.StdEncoding.EncodeToString([]byte("{")),  // base64, но битый JSON
+		base64.StdEncoding.EncodeToString([]byte(`{}`)), // валидный JSON, пустой cursor id
+	}
+	for _, tok := range badTokens {
+		_, _, rerr := rr.List(ctx, region.Pagination{PageSize: 10, PageToken: tok})
+		require.Equal(t, codes.InvalidArgument, status.Code(rerr), "region List(page_token=%q) code", tok)
+		_, _, zerr := zr.List(ctx, zone.Pagination{PageSize: 10, PageToken: tok})
+		require.Equal(t, codes.InvalidArgument, status.Code(zerr), "zone List(page_token=%q) code", tok)
+	}
 }
 
 func outboxCount(t *testing.T, pool *pgxpool.Pool, kind, id, eventType string) int {

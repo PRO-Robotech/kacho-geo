@@ -27,7 +27,6 @@ import (
 	geov1 "github.com/PRO-Robotech/kacho-proto/gen/go/kacho/cloud/geo/v1"
 
 	"github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/shared/lro"
-	"github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/shared/serviceerr"
 	"github.com/PRO-Robotech/kacho-geo/internal/domain"
 	geoerrors "github.com/PRO-Robotech/kacho-geo/internal/errors"
 )
@@ -38,36 +37,65 @@ type Pagination struct {
 	PageToken string
 }
 
-// Repo — port-интерфейс к таблице regions (read + admin CRUD). Реализуется
-// internal/repo/kacho/pg.RegionRepo; для unit-тестов подменяется repomock.
+// Reader — read-порт справочника regions (Get/List). CQRS-разделён с Writer:
+// read-side можно связать с read-replica pool независимо от writer-side.
+type Reader interface {
+	Get(ctx context.Context, id string) (*domain.Region, error)
+	List(ctx context.Context, p Pagination) ([]*domain.Region, string, error)
+}
+
+// Writer — write-порт admin-мутаций regions (Insert/Update/Delete + outbox-emit в
+// writer-tx). Отделён от Reader (write идёт на primary).
 //
 // Update — атомарный single-statement (UPDATE … RETURNING), без предварительного
 // Get (исключен TOCTOU read-modify-write). name=nil → поле не меняется (COALESCE);
 // 0 rows из RETURNING → ErrNotFound.
-type Repo interface {
-	Get(ctx context.Context, id string) (*domain.Region, error)
-	List(ctx context.Context, p Pagination) ([]*domain.Region, string, error)
+type Writer interface {
 	Insert(ctx context.Context, r *domain.Region) (*domain.Region, error)
 	Update(ctx context.Context, id string, name *string) (*domain.Region, error)
 	Delete(ctx context.Context, id string) error
 }
 
-// UseCase — бизнес-логика Region поверх порта Repo и LRO-стека operations.
-type UseCase struct {
-	repo Repo
-	ops  operations.Repo
+// Repo — композит Reader+Writer для adapter'а, реализующего обе стороны
+// (pg.RegionRepo). Composition root связывает reader/writer раздельно.
+type Repo interface {
+	Reader
+	Writer
 }
 
-// New собирает UseCase для Region. ops — corelib LRO-репозиторий operations-таблицы
-// (admin-мутации async, см. doc пакета).
-func New(repo Repo, ops operations.Repo) *UseCase { return &UseCase{repo: repo, ops: ops} }
+// ErrToStatus маппит доменную/repo sentinel-ошибку в transport-status,
+// сохраняемый async-worker'ом в Operation.error. Инжектится composition root'ом
+// (serviceerr.ToStatus) — use-case не выбирает transport-коды сам: выбор кода —
+// transport-concern, он остаётся во владении handler/transport-слоя. Пустой (nil)
+// mapper → identity (worker сведёт к INTERNAL) — защита от паники в неполном
+// wiring; production всегда инжектит реальный.
+type ErrToStatus func(error) error
+
+// UseCase — бизнес-логика Region поверх CQRS-портов Reader/Writer, LRO-стека
+// operations и инжектированного transport-mapper'а errStatus.
+type UseCase struct {
+	reader    Reader
+	writer    Writer
+	ops       operations.Repo
+	errStatus ErrToStatus
+}
+
+// New собирает UseCase для Region. reader/writer — CQRS-разделённые порты
+// (composition root может связать reader с репликой); ops — corelib LRO-репозиторий
+// operations-таблицы; errStatus — инжектированный маппер sentinel→gRPC-status.
+func New(reader Reader, writer Writer, ops operations.Repo, errStatus ErrToStatus) *UseCase {
+	if errStatus == nil {
+		errStatus = func(err error) error { return err }
+	}
+	return &UseCase{reader: reader, writer: writer, ops: ops, errStatus: errStatus}
+}
 
 // Get возвращает Region по id.
 func (u *UseCase) Get(ctx context.Context, id string) (*domain.Region, error) {
 	if id == "" {
 		return nil, geoerrors.ErrInvalidArg
 	}
-	r, err := u.repo.Get(ctx, id)
+	r, err := u.reader.Get(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +109,7 @@ func (u *UseCase) List(ctx context.Context, p Pagination) ([]*domain.Region, str
 		return nil, "", err
 	}
 	p.PageSize = size
-	return u.repo.List(ctx, p)
+	return u.reader.List(ctx, p)
 }
 
 // Create принимает запрос на создание Region (admin-only) и возвращает Operation.
@@ -104,9 +132,9 @@ func (u *UseCase) Create(ctx context.Context, id, name string) (*operations.Oper
 		return nil, err
 	}
 	operations.Run(ctx, u.ops, op.ID, func(ctx context.Context) (*anypb.Any, error) {
-		created, derr := u.repo.Insert(ctx, &r)
+		created, derr := u.writer.Insert(ctx, &r)
 		if derr != nil {
-			return nil, serviceerr.ToStatus(derr)
+			return nil, u.errStatus(derr)
 		}
 		return marshalRegion(created)
 	})
@@ -137,9 +165,9 @@ func (u *UseCase) Update(ctx context.Context, id, name string) (*operations.Oper
 		return nil, err
 	}
 	operations.Run(ctx, u.ops, op.ID, func(ctx context.Context) (*anypb.Any, error) {
-		updated, derr := u.repo.Update(ctx, id, namePtr)
+		updated, derr := u.writer.Update(ctx, id, namePtr)
 		if derr != nil {
-			return nil, serviceerr.ToStatus(derr)
+			return nil, u.errStatus(derr)
 		}
 		return marshalRegion(updated)
 	})
@@ -164,8 +192,8 @@ func (u *UseCase) Delete(ctx context.Context, id string) (*operations.Operation,
 		return nil, err
 	}
 	operations.Run(ctx, u.ops, op.ID, func(ctx context.Context) (*anypb.Any, error) {
-		if derr := u.repo.Delete(ctx, id); derr != nil {
-			return nil, serviceerr.ToStatus(derr)
+		if derr := u.writer.Delete(ctx, id); derr != nil {
+			return nil, u.errStatus(derr)
 		}
 		return anypb.New(&emptypb.Empty{})
 	})
