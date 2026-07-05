@@ -4,8 +4,6 @@
 package handler
 
 import (
-	"time"
-
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/PRO-Robotech/kacho-corelib/operations"
@@ -13,32 +11,15 @@ import (
 	geov1 "github.com/PRO-Robotech/kacho-proto/gen/go/kacho/cloud/geo/v1"
 
 	"github.com/PRO-Robotech/kacho-geo/internal/domain"
+	"github.com/PRO-Robotech/kacho-geo/internal/protoconv"
 )
 
-// toProtoRegion конвертирует domain.Region → geov1.Region (created_at
-// усекается до секунд).
-func toProtoRegion(r *domain.Region) *geov1.Region {
-	return &geov1.Region{
-		Id:        r.ID,
-		Name:      r.Name,
-		CreatedAt: ts(r.CreatedAt),
-	}
-}
+// toProtoRegion / toProtoZone делегируют единому источнику конверсии
+// internal/protoconv (см. пакет: три бывшие копии field-mapping'а объединены,
+// чтобы response обычного worker'а и LRO-recovery не разъехались).
+func toProtoRegion(r *domain.Region) *geov1.Region { return protoconv.Region(r) }
 
-// toProtoZone конвертирует domain.Zone → geov1.Zone.
-func toProtoZone(z *domain.Zone) *geov1.Zone {
-	return &geov1.Zone{
-		Id:        z.ID,
-		RegionId:  z.RegionID,
-		Status:    geov1.Zone_Status(z.Status),
-		Name:      z.Name,
-		CreatedAt: ts(z.CreatedAt),
-	}
-}
-
-func ts(t time.Time) *timestamppb.Timestamp {
-	return timestamppb.New(t.Truncate(time.Second))
-}
+func toProtoZone(z *domain.Zone) *geov1.Zone { return protoconv.Zone(z) }
 
 // operationToProto конвертирует corelib operations.Operation в proto-форму
 // (OperationService.Get/мутации возвращают её клиенту). oneof result —

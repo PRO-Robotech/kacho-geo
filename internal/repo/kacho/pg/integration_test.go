@@ -23,6 +23,7 @@ import (
 
 	region "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/region"
 	zone "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/zone"
+	"github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/shared/serviceerr"
 	"github.com/PRO-Robotech/kacho-geo/internal/domain"
 	geoerrors "github.com/PRO-Robotech/kacho-geo/internal/errors"
 	"github.com/PRO-Robotech/kacho-geo/internal/migrations"
@@ -358,8 +359,11 @@ func TestConcurrentZoneInsert_OneWins(t *testing.T) {
 }
 
 // TestList_malformedPageToken_invalidArgument — битый page_token (не-base64,
-// битый JSON, пустой cursor id) в Region/Zone List → gRPC InvalidArgument,
-// не Internal и без утечки внутренней decode-детали как отдельного кода.
+// битый JSON, пустой cursor id) в Region/Zone List → доменный sentinel
+// geoerrors.ErrInvalidArg (repo-слой НЕ конструирует gRPC-status сам — выбор кода
+// transport-concern через serviceerr.ToStatus, как и остальные repo-ошибки). Через
+// serviceerr.ToStatus sentinel маппится в codes.InvalidArgument без утечки
+// внутренней decode-детали как отдельного кода.
 func TestList_malformedPageToken_invalidArgument(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
@@ -373,9 +377,11 @@ func TestList_malformedPageToken_invalidArgument(t *testing.T) {
 	}
 	for _, tok := range badTokens {
 		_, _, rerr := rr.List(ctx, region.Pagination{PageSize: 10, PageToken: tok})
-		require.Equal(t, codes.InvalidArgument, status.Code(rerr), "region List(page_token=%q) code", tok)
+		require.ErrorIs(t, rerr, geoerrors.ErrInvalidArg, "region List(page_token=%q) sentinel", tok)
+		require.Equal(t, codes.InvalidArgument, status.Code(serviceerr.ToStatus(rerr)), "region List(page_token=%q) mapped code", tok)
 		_, _, zerr := zr.List(ctx, zone.Pagination{PageSize: 10, PageToken: tok})
-		require.Equal(t, codes.InvalidArgument, status.Code(zerr), "zone List(page_token=%q) code", tok)
+		require.ErrorIs(t, zerr, geoerrors.ErrInvalidArg, "zone List(page_token=%q) sentinel", tok)
+		require.Equal(t, codes.InvalidArgument, status.Code(serviceerr.ToStatus(zerr)), "zone List(page_token=%q) mapped code", tok)
 	}
 }
 

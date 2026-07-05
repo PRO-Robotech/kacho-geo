@@ -46,35 +46,36 @@ import (
 
 const gatewaySAN = "spiffe://kacho.cloud/ns/kacho/sa/kacho-api-gateway"
 
-// --- 1. source-level wiring guard ---
+// --- 1. wiring guard (robust source assertion, non-vacuous) ---
 
-// TestInternalListener_TrustedPrincipalExtract_HasForwarderAllowlist — оба
-// internal-набора интерсепторов (internalUnary/internalStream) обязаны навешивать
-// TrustedPrincipalExtract С allow-list форвардеров WithTrustedForwarders(...),
-// а не bare-вариант (доверяющий любому verified peer'у).
+// TestServe_BothListeners_UseSharedPrincipalBuilder — оба листенера (public :9090 и
+// internal :9091) строятся из ЕДИНОГО newPrincipalInterceptors(forwarders), а не
+// расходящимися inline-цепочками. Робастная замена прежнему brace-block-скрейпингу
+// (тот мог пройти вакуумно на пустом/несовпавшем блоке — см. 2-й аудит finding
+// «brittle source-string matching»). Проверяет:
+//  1. ровно ДВА вызова newPrincipalInterceptors(forwarders) — public + internal;
+//  2. forwarders привязан к cfg.AuthZTrustedForwarderSANs (allow-list доезжает);
+//  3. сам builder навешивает TrustedPrincipalExtract(WithTrustedForwarders(...));
+//  4. нет bare PrincipalExtract (доверяющего любому peer'у).
 //
-// RED-демонстрация: вернуть bare grpcsrv.UnaryTrustedPrincipalExtract() без
-// WithTrustedForwarders — тест падает (confused-deputy снова открыт).
-func TestInternalListener_TrustedPrincipalExtract_HasForwarderAllowlist(t *testing.T) {
+// Поведенческая сторона (что цепочка реально снимает forged principal) покрыта
+// тестами ниже, которые исполняют РЕАЛЬНЫЙ newPrincipalInterceptors, а не локальную
+// реконструкцию — source-assertion лишь фиксирует, что serve.go его вызывает дважды.
+func TestServe_BothListeners_UseSharedPrincipalBuilder(t *testing.T) {
 	src := readServeSrc(t)
 
-	for _, l := range []struct {
-		name    string
-		marker  string
-		trusted string
-	}{
-		{"internalUnary", "internalUnary := []grpc.UnaryServerInterceptor{", "grpcsrv.UnaryTrustedPrincipalExtract("},
-		{"internalStream", "internalStream := []grpc.StreamServerInterceptor{", "grpcsrv.StreamTrustedPrincipalExtract("},
-	} {
-		block := braceBlockAfter(t, src, l.marker)
-		if !strings.Contains(block, l.trusted) {
-			t.Fatalf("%s: missing %s — internal principal НЕ trust-gated", l.name, l.trusted)
-		}
-		if !strings.Contains(block, "grpcsrv.WithTrustedForwarders(") {
-			t.Errorf("%s: TrustedPrincipalExtract без WithTrustedForwarders(...) — "+
-				"любой verified mTLS-peer форвардит произвольного principal'а "+
-				"(confused-deputy priv-esc до admin-CRUD Region/Zone)", l.name)
-		}
+	if n := strings.Count(src, "newPrincipalInterceptors(forwarders)"); n != 2 {
+		t.Fatalf("serve.go: newPrincipalInterceptors(forwarders) вызван %d раз, ожидалось 2 (public+internal) — листенеры могут разъехаться по anti-spoof", n)
+	}
+	if !strings.Contains(src, "forwarders := cfg.AuthZTrustedForwarderSANs") {
+		t.Errorf("serve.go: forwarders не привязан к cfg.AuthZTrustedForwarderSANs — allow-list форвардеров может не доехать до цепочки")
+	}
+	if !strings.Contains(src, "grpcsrv.UnaryTrustedPrincipalExtract(grpcsrv.WithTrustedForwarders(") ||
+		!strings.Contains(src, "grpcsrv.StreamTrustedPrincipalExtract(grpcsrv.WithTrustedForwarders(") {
+		t.Errorf("serve.go: newPrincipalInterceptors без TrustedPrincipalExtract(WithTrustedForwarders(...)) — principal НЕ trust-gated (confused-deputy)")
+	}
+	if strings.Contains(src, "grpcsrv.UnaryPrincipalExtract(") || strings.Contains(src, "grpcsrv.StreamPrincipalExtract(") {
+		t.Errorf("serve.go: bare PrincipalExtract присутствует — forwarded principal доверяется безусловно (principal-spoofing)")
 	}
 }
 
@@ -118,14 +119,13 @@ func TestInternalPrincipalChain_ForwarderAllowlist_DropsNonGateway(t *testing.T)
 
 // --- helpers ---
 
-// internalPrincipalChain собирает ту же unary-цепочку principal-extract, что
-// serve.go навешивает на internal-листенер. forwarderSANs пробрасываются как
-// WithTrustedForwarders (allow-list доверенных форвардеров).
+// internalPrincipalChain собирает unary-цепочку principal-extract из РЕАЛЬНОГО
+// serve.go-builder'а newPrincipalInterceptors — тест исполняет ту же wiring-логику,
+// что и продовый листенер, а не её локальную реконструкцию (устранена зависимость
+// от совпадения строк serve.go). forwarderSANs — allow-list доверенных форвардеров.
 func internalPrincipalChain(forwarderSANs ...string) grpc.UnaryServerInterceptor {
-	return chainUnaryServer(
-		grpcsrv.UnaryCertIdentityExtract(),
-		grpcsrv.UnaryTrustedPrincipalExtract(grpcsrv.WithTrustedForwarders(forwarderSANs...)),
-	)
+	unary, _ := newPrincipalInterceptors(forwarderSANs)
+	return chainUnaryServer(unary...)
 }
 
 func runChain(t *testing.T, chain grpc.UnaryServerInterceptor, ctx context.Context) (carrierID string, trusted bool) {
@@ -181,32 +181,6 @@ func readServeSrc(t *testing.T) string {
 		t.Fatalf("read serve.go: %v", err)
 	}
 	return string(b)
-}
-
-// braceBlockAfter возвращает текст { ... }-блока, начинающегося с открывающей
-// фигурной скобки в marker, балансируя скобки. Используется для среза
-// интерсептор-слайсов internalUnary/internalStream из serve.go.
-func braceBlockAfter(t *testing.T, src, marker string) string {
-	t.Helper()
-	i := strings.Index(src, marker)
-	if i < 0 {
-		t.Fatalf("serve.go: marker %q не найден", marker)
-	}
-	open := strings.LastIndexByte(src[:i+len(marker)], '{')
-	depth := 0
-	for j := open; j < len(src); j++ {
-		switch src[j] {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return src[open : j+1]
-			}
-		}
-	}
-	t.Fatalf("serve.go: несбалансированные скобки после marker %q", marker)
-	return ""
 }
 
 func mustParseURIs(t *testing.T, raw ...string) []*url.URL {

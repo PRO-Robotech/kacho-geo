@@ -21,13 +21,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/PRO-Robotech/kacho-corelib/operations"
 
 	geov1 "github.com/PRO-Robotech/kacho-proto/gen/go/kacho/cloud/geo/v1"
 
 	"github.com/PRO-Robotech/kacho-geo/internal/operationresolver"
+	"github.com/PRO-Robotech/kacho-geo/internal/protoconv"
 	"github.com/PRO-Robotech/kacho-geo/internal/repo/kacho/pg"
 )
 
@@ -75,8 +75,9 @@ func startLRORecovery(ctx context.Context, pool *pgxpool.Pool, regionRepo *pg.Re
 }
 
 // regionReader / zoneReader — adapter'ы pg-репо → read-порты resolver'а. Каждый
-// читает запись по id и конвертит domain→proto (created_at усекается до секунд —
-// единый timestamp-формат Kachō, parity с marshalRegion/marshalZone use-case).
+// читает запись по id и конвертит domain→proto через ЕДИНЫЙ protoconv (та же
+// проекция, что use-case-marshaller и handler — reconciler разрешает осиротевшую
+// операцию в тот же response, что вернул бы обычный worker, без риска дрейфа полей).
 // pg-репо возвращает geoerrors.ErrNotFound для отсутствующего ресурса — resolver
 // трактует это как absent.
 
@@ -87,11 +88,7 @@ func (r regionReader) Get(ctx context.Context, id string) (*geov1.Region, error)
 	if err != nil {
 		return nil, err
 	}
-	return &geov1.Region{
-		Id:        rg.ID,
-		Name:      rg.Name,
-		CreatedAt: timestamppb.New(rg.CreatedAt.Truncate(time.Second)),
-	}, nil
+	return protoconv.Region(rg), nil
 }
 
 type zoneReader struct{ repo *pg.ZoneRepo }
@@ -101,11 +98,5 @@ func (r zoneReader) Get(ctx context.Context, id string) (*geov1.Zone, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &geov1.Zone{
-		Id:        z.ID,
-		RegionId:  z.RegionID,
-		Status:    geov1.Zone_Status(z.Status),
-		Name:      z.Name,
-		CreatedAt: timestamppb.New(z.CreatedAt.Truncate(time.Second)),
-	}, nil
+	return protoconv.Zone(z), nil
 }
