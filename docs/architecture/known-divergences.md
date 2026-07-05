@@ -29,6 +29,21 @@ removable by a workspace-wide corelib redesign.
 return a plain domain sentinel (corelib-side mapper), this residual would
 disappear. Not planned.
 
+**Direct `geov1` / `protoconv` / `anypb` use in the use-case.** For the same root
+cause, the use-cases also import the generated `geov1` stubs and marshal
+`domain.Zone`/`domain.Region` into a proto `Any` (`geov1.{Create,Update,Delete}*Metadata`
+at the mutation entrypoints; `marshalZone`/`marshalRegion` → `protoconv` + `anypb.New`
+inside the `operations.Run` closure). This is **mandated by the corelib LRO
+callback contract**, not a geo-local leak: `operations.NewFromContext` takes the
+operation-metadata proto, and the `operations.Run(ctx, repo, id, func) (*anypb.Any, error)`
+closure signature requires the terminal response to be an `Any`. Every kacho
+service (`kacho-vpc`, `kacho-compute`, `kacho-nlb`) emits the LRO metadata/response
+`Any` from inside the use-case identically — moving it to the handler would
+diverge geo from the platform LRO pattern (godzila regime) without removing the
+proto dependency, since the closure runs on the corelib worker, not the handler.
+`protoconv` is the single field-mapping projection shared by handler, LRO-recovery,
+and this marshal path, so there is no drift. Not a defect; not planned to change.
+
 ## 2. Black-box Newman suite not run from this repo
 
 See `tests/newman/README.md`. The suite is tracked as a concrete open ticket
