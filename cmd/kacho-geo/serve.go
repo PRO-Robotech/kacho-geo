@@ -74,6 +74,14 @@ func runServe(cfg config.Config) error {
 	zoneRepo := pg.NewZoneRepo(pool)
 	zoneUC := zone.New(zoneRepo, zoneRepo, opsRepo, serviceerr.ToStatus)
 
+	// ── durable LRO recovery: доменный resolver + corelib-reconciler поверх
+	// schema kacho_geo. RecoverAll прогоняется ЗДЕСЬ (до приёма трафика) —
+	// осиротевшие после краха процесса done=false строки разрешаются в терминал
+	// по committed-реальности ресурса; периодический Run(ctx) ниже — backstop.
+	// Это тот backstop, который обещает комментарий про shutdown-drain (worker
+	// добирает только свои in-flight; crash mid-op закрывает reconciler).
+	lroReconciler := startLRORecovery(ctx, pool, regionRepo, zoneRepo, logger)
+
 	// ── authz: per-RPC OpenFGA Check на ОБОИХ листенерах (AuthN+AuthZ везде —
 	// internal :9091 НЕ освобожден). Ребро geo→iam Check дозванивается в
 	// kacho-iam internal (:9091) с client-cert (mTLS). Check обязателен —
@@ -224,6 +232,11 @@ func runServe(cfg config.Config) error {
 				"err", werr, "active", operations.Active())
 		}
 	}()
+
+	// Периодический backstop-sweep reconciler'а: sweep осиротевших LRO каждые
+	// geoReconcileInterval до отмены ctx (SIGTERM/SIGINT). Останавливается сам по
+	// ctx.Done() — не требует отдельного drain'а.
+	go lroReconciler.Run(ctx)
 
 	go func() {
 		if serr := internalSrv.Serve(internalListener); serr != nil && !errors.Is(serr, grpc.ErrServerStopped) {
