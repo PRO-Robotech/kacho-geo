@@ -100,13 +100,22 @@ func runServe(cfg config.Config) error {
 	// Internal (:9091): cert-identity → trusted-principal (anti-spoof) →
 	// authz Check. ТОТ ЖЕ per-RPC authz, что и на public — internal не
 	// доверенный (defense-in-depth против lateral movement).
+	//
+	// WithTrustedForwarders ограничивает форвард end-user principal'а allow-list'ом
+	// SAN'ов (api-gateway SA): verified-но-не-форвардер peer (внутренний сервис со
+	// своим валидным client-cert'ом) НЕ может выдать себя за пользователя и
+	// эскалировать до admin-CRUD Region/Zone (confused-deputy). Единственный
+	// легитимный форвардер здесь — api-gateway; consumer'ы vpc/compute/nlb ходят в
+	// публичный :9090. Пустой allow-list (default) сохраняет прежнее «любой verified
+	// peer доверен» (dev back-compat) — enforce задаётся конфигом в production.
+	forwarders := cfg.AuthZTrustedForwarderSANs
 	internalUnary := []grpc.UnaryServerInterceptor{
 		grpcsrv.UnaryCertIdentityExtract(),
-		grpcsrv.UnaryTrustedPrincipalExtract(),
+		grpcsrv.UnaryTrustedPrincipalExtract(grpcsrv.WithTrustedForwarders(forwarders...)),
 	}
 	internalStream := []grpc.StreamServerInterceptor{
 		grpcsrv.StreamCertIdentityExtract(),
-		grpcsrv.StreamTrustedPrincipalExtract(),
+		grpcsrv.StreamTrustedPrincipalExtract(grpcsrv.WithTrustedForwarders(forwarders...)),
 	}
 
 	switch {

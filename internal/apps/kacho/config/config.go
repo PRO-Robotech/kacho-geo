@@ -52,6 +52,21 @@ type Config struct {
 	// (только dev / break-glass).
 	AuthZBreakglass bool `envconfig:"KACHO_GEO_AUTHZ_BREAKGLASS" default:"false"`
 
+	// AuthZTrustedForwarderSANs — allow-list cert-identity SAN'ов, которым разрешено
+	// форвардить end-user principal в x-kacho-principal-* metadata (обычно
+	// единственный — api-gateway SA, SAN spiffe://kacho.cloud/ns/<ns>/sa/kacho-api-gateway).
+	// Принимает comma-separated список. Пусто (default) → любой mTLS-verified peer
+	// доверен как форвардер (паритет с insecure dev back-compat и прочими сервисами).
+	// Задаётся в production для defense-in-depth против confused-deputy: внутренний
+	// сервис со своим валидным client-cert'ом не сможет выдать себя за пользователя и
+	// эскалировать до admin-CRUD Region/Zone на internal-листенере (:9091). На
+	// internal-листенере principal trust-gated через grpcsrv.UnaryCertIdentityExtract +
+	// UnaryTrustedPrincipalExtract(WithTrustedForwarders(...)) — без verified cert'а
+	// (или вне allow-list) forwarded principal снимается → authz видит no-principal →
+	// fail-closed deny. Единственный легитимный форвардер на :9091 — api-gateway
+	// (consumer'ы vpc/compute/nlb валидируют Region/Zone на публичном :9090).
+	AuthZTrustedForwarderSANs []string `envconfig:"KACHO_GEO_AUTHZ_TRUSTED_FORWARDER_SANS"`
+
 	// ===== per-edge mTLS =====
 
 	// IAMAuthzMTLS — client-creds для ребра geo→iam Check (:9091).
