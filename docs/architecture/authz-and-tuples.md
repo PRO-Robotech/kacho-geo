@@ -48,3 +48,27 @@ Check, и требование mTLS на обоих листенерах. Это
 > breakglass — строго **emergency-only**: локальная отладка или инцидент, никогда не
 > рабочий стенд. `KACHO_GEO_AUTH_MODE` (dev/production/production-strict) влияет
 > только на строгость TLS к БД и breakglass не ограничивает.
+
+## Trusted-forwarder allow-list: secure-by-default
+
+Форвардить end-user principal (`x-kacho-principal-*` metadata) вправе только доверенный
+пир — обычно единственный: api-gateway SA. `KACHO_GEO_AUTHZ_TRUSTED_FORWARDER_SANS`
+пинит allow-list его cert-identity SAN'ов; на обоих листенерах principal trust-gated
+через `grpcsrv.UnaryTrustedPrincipalExtract(WithTrustedForwarders(...))`. Verified-но-
+не-форвардер пир (внутренний сервис со своим client-cert'ом) не может выдать себя за
+пользователя — ни эскалировать до admin-CRUD Region/Zone (:9091), ни подделать
+viewer-principal на публичном read-endpoint (:9090).
+
+**Secure-by-default (fail-closed):** на любом non-breakglass старте allow-list обязан
+быть непустым. Пустой список означает «доверять ЛЮБОМУ mTLS-verified пиру как
+форвардеру» (corelib `WithTrustedForwarders` при пустом входе → trust-any) —
+principal-spoofing / confused-deputy. Поэтому:
+
+- **production / production-strict** — обязателен непустой SAN. Trust-any недопустим ни
+  при каких условиях.
+- **dev** — пустой allow-list разрешён **только** с явным опт-ином
+  `KACHO_GEO_AUTHZ_TRUST_ANY_FORWARDER=true` (local back-compat без api-gateway SAN).
+  Без опт-ина и без запиненного SAN сервис **не стартует** — раньше пустой список молча
+  проходил в dev (insecure-by-default gap), теперь trust-any — осознанный dev-only
+  выбор, а не дефолт. `KACHO_GEO_AUTHZ_BREAKGLASS=true` по-прежнему полностью снимает
+  требование (emergency-only).

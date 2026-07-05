@@ -68,6 +68,15 @@ type Config struct {
 	// consumer'ы vpc/compute/nlb ходят на публичный :9090 со своим cert'ом.
 	AuthZTrustedForwarderSANs []string `envconfig:"KACHO_GEO_AUTHZ_TRUSTED_FORWARDER_SANS"`
 
+	// AuthZTrustAnyForwarder — ЯВНЫЙ dev-опт-ин на «доверять ЛЮБОМУ mTLS-verified
+	// peer'у как форвардеру end-user principal'а» (пустой allow-list). Secure-by-
+	// default: без этого флага (и без запиненного SAN) non-breakglass старт
+	// ОТКАЗЫВАЕТ — пустой allow-list больше НЕ молчаливый дефолт. Нужен только для
+	// локального dev без api-gateway-SAN; в production/production-strict НЕ
+	// honored (там обязателен непустой SAN — trust-any недопустим). Оставленный
+	// незаданным (false) = fail-closed. См. validateSecurityConfig.
+	AuthZTrustAnyForwarder bool `envconfig:"KACHO_GEO_AUTHZ_TRUST_ANY_FORWARDER" default:"false"`
+
 	// ===== per-edge mTLS =====
 
 	// IAMAuthzMTLS — client-creds для ребра geo→iam Check (:9091).

@@ -21,6 +21,7 @@ import (
 
 	region "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/region"
 	zone "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/zone"
+	"github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/shared/serviceerr"
 	"github.com/PRO-Robotech/kacho-geo/internal/domain"
 )
 
@@ -39,7 +40,7 @@ func NewInternalRegionHandler(uc *region.UseCase) *InternalRegionHandler {
 func (h *InternalRegionHandler) Create(ctx context.Context, req *geov1.CreateRegionRequest) (*operationpb.Operation, error) {
 	op, err := h.uc.Create(ctx, req.GetId(), req.GetName())
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, serviceerr.ToStatus(err)
 	}
 	return operationToProto(op), nil
 }
@@ -48,7 +49,7 @@ func (h *InternalRegionHandler) Create(ctx context.Context, req *geov1.CreateReg
 func (h *InternalRegionHandler) Update(ctx context.Context, req *geov1.UpdateRegionRequest) (*operationpb.Operation, error) {
 	op, err := h.uc.Update(ctx, req.GetRegionId(), req.GetName())
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, serviceerr.ToStatus(err)
 	}
 	return operationToProto(op), nil
 }
@@ -58,7 +59,7 @@ func (h *InternalRegionHandler) Update(ctx context.Context, req *geov1.UpdateReg
 func (h *InternalRegionHandler) Delete(ctx context.Context, req *geov1.DeleteRegionRequest) (*operationpb.Operation, error) {
 	op, err := h.uc.Delete(ctx, req.GetRegionId())
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, serviceerr.ToStatus(err)
 	}
 	return operationToProto(op), nil
 }
@@ -78,7 +79,7 @@ func NewInternalZoneHandler(uc *zone.UseCase) *InternalZoneHandler {
 func (h *InternalZoneHandler) Create(ctx context.Context, req *geov1.CreateZoneRequest) (*operationpb.Operation, error) {
 	op, err := h.uc.Create(ctx, req.GetId(), req.GetRegionId(), req.GetName(), domain.ZoneStatus(req.GetStatus()))
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, serviceerr.ToStatus(err)
 	}
 	return operationToProto(op), nil
 }
@@ -87,7 +88,7 @@ func (h *InternalZoneHandler) Create(ctx context.Context, req *geov1.CreateZoneR
 func (h *InternalZoneHandler) Update(ctx context.Context, req *geov1.UpdateZoneRequest) (*operationpb.Operation, error) {
 	op, err := h.uc.Update(ctx, req.GetZoneId(), req.GetRegionId(), req.GetName(), domain.ZoneStatus(req.GetStatus()))
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, serviceerr.ToStatus(err)
 	}
 	return operationToProto(op), nil
 }
@@ -96,7 +97,7 @@ func (h *InternalZoneHandler) Update(ctx context.Context, req *geov1.UpdateZoneR
 func (h *InternalZoneHandler) Delete(ctx context.Context, req *geov1.DeleteZoneRequest) (*operationpb.Operation, error) {
 	op, err := h.uc.Delete(ctx, req.GetZoneId())
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, serviceerr.ToStatus(err)
 	}
 	return operationToProto(op), nil
 }
