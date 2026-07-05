@@ -16,6 +16,7 @@ import (
 	zone "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/zone"
 	"github.com/PRO-Robotech/kacho-geo/internal/domain"
 	geoerrors "github.com/PRO-Robotech/kacho-geo/internal/errors"
+	"github.com/PRO-Robotech/kacho-geo/internal/repo/kacho/dberr"
 )
 
 // ZoneRepo — реализация zone.Repo поверх pgx.
@@ -33,7 +34,7 @@ func (r *ZoneRepo) Get(ctx context.Context, id string) (*domain.Zone, error) {
 	err := r.pool.QueryRow(ctx, `SELECT id, region_id, name, status, created_at FROM zones WHERE id = $1`, id).
 		Scan(&z.ID, &z.RegionID, &z.Name, &statusName, &z.CreatedAt)
 	if err != nil {
-		return nil, geoerrors.Wrap(err, "Zone", id)
+		return nil, dberr.Wrap(err, "Zone", id)
 	}
 	z.Status = zoneStatusFromName(statusName)
 	return &z, nil
@@ -57,7 +58,7 @@ func (r *ZoneRepo) List(ctx context.Context, p zone.Pagination) ([]*domain.Zone,
 	args = append(args, pageSize+1)
 	rows, err := r.pool.Query(ctx, q, args...)
 	if err != nil {
-		return nil, "", geoerrors.Wrap(err, "Zone", "")
+		return nil, "", dberr.Wrap(err, "Zone", "")
 	}
 	defer rows.Close()
 	var out []*domain.Zone
@@ -65,13 +66,13 @@ func (r *ZoneRepo) List(ctx context.Context, p zone.Pagination) ([]*domain.Zone,
 		var z domain.Zone
 		var statusName string
 		if err := rows.Scan(&z.ID, &z.RegionID, &z.Name, &statusName, &z.CreatedAt); err != nil {
-			return nil, "", geoerrors.Wrap(err, "Zone", "")
+			return nil, "", dberr.Wrap(err, "Zone", "")
 		}
 		z.Status = zoneStatusFromName(statusName)
 		out = append(out, &z)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, "", geoerrors.Wrap(err, "Zone", "")
+		return nil, "", dberr.Wrap(err, "Zone", "")
 	}
 	var next string
 	if int64(len(out)) > pageSize {
@@ -95,7 +96,7 @@ func (r *ZoneRepo) Insert(ctx context.Context, z *domain.Zone) (*domain.Zone, er
 			z.ID, z.RegionID, z.Name, zoneStatusName(z.Status), time.Now().UTC()).
 			Scan(&created.ID, &created.RegionID, &created.Name, &statusName, &created.CreatedAt)
 		if serr != nil {
-			return geoerrors.Wrap(serr, "Zone", z.ID)
+			return dberr.Wrap(serr, "Zone", z.ID)
 		}
 		created.Status = zoneStatusFromName(statusName)
 		return outbox.Emit(ctx, tx, outboxTable, "Zone", created.ID, "CREATED", map[string]any{
@@ -136,7 +137,7 @@ func (r *ZoneRepo) Update(ctx context.Context, id string, p zone.UpdateParams) (
 			id, p.RegionID, p.Name, statusName).
 			Scan(&updated.ID, &updated.RegionID, &updated.Name, &outStatus, &updated.CreatedAt)
 		if serr != nil {
-			return geoerrors.Wrap(serr, "Zone", id)
+			return dberr.Wrap(serr, "Zone", id)
 		}
 		updated.Status = zoneStatusFromName(outStatus)
 		return outbox.Emit(ctx, tx, outboxTable, "Zone", updated.ID, "UPDATED", map[string]any{
@@ -159,7 +160,7 @@ func (r *ZoneRepo) Delete(ctx context.Context, id string) error {
 	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `DELETE FROM zones WHERE id = $1`, id)
 		if err != nil {
-			return geoerrors.Wrap(err, "Zone", id)
+			return dberr.Wrap(err, "Zone", id)
 		}
 		if tag.RowsAffected() == 0 {
 			return fmt.Errorf("%w: Zone %s not found", geoerrors.ErrNotFound, id)

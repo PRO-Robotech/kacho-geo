@@ -20,6 +20,7 @@ import (
 	"github.com/PRO-Robotech/kacho-geo/internal/domain"
 	geoerrors "github.com/PRO-Robotech/kacho-geo/internal/errors"
 	"github.com/PRO-Robotech/kacho-geo/internal/handler"
+	"github.com/PRO-Robotech/kacho-geo/internal/repo/kacho/dberr"
 	"github.com/PRO-Robotech/kacho-geo/internal/repo/kacho/repomock"
 )
 
@@ -43,7 +44,7 @@ func awaitOpFromHandler(t *testing.T, oh *handler.OperationHandler, opID string)
 func TestRegionHandler_Get_notFound_mapsToNotFound(t *testing.T) {
 	uc := region.New(&repomock.RegionRepo{
 		GetFunc: func(_ context.Context, id string) (*domain.Region, error) {
-			return nil, geoerrors.Wrap(stderrors.New("x"), "Region", id) // путь ErrInternal
+			return nil, dberr.Wrap(stderrors.New("x"), "Region", id) // путь ErrInternal
 		},
 	}, repomock.NewOpsRepo())
 	h := handler.NewRegionHandler(uc)
