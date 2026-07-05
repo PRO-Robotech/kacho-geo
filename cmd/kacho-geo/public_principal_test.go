@@ -17,50 +17,20 @@ package main
 // peer не может выдать себя за viewer-principal'а, honored только api-gateway.
 
 import (
-	"strings"
 	"testing"
 
 	"google.golang.org/grpc"
 
-	"github.com/PRO-Robotech/kacho-corelib/grpcsrv"
 	"github.com/PRO-Robotech/kacho-corelib/operations"
 )
 
-// --- 1. source-level wiring guard ---
+// Source-level wiring guard для public/internal листенеров теперь — общий
+// TestServe_BothListeners_UseSharedPrincipalBuilder (cert_bound_identity_test.go):
+// оба листенера строятся из единого newPrincipalInterceptors(forwarders), поэтому
+// отдельный per-listener brace-block-скрейпинг (хрупкий, мог пройти вакуумно) убран.
+// Ниже — поведенческий страж публичной цепочки поверх РЕАЛЬНОГО builder'а.
 
-// TestPublicListener_TrustedPrincipalExtract_HasForwarderAllowlist — оба
-// публичных набора интерсепторов (publicUnary/publicStream) обязаны навешивать
-// trust-aware TrustedPrincipalExtract С allow-list форвардеров
-// WithTrustedForwarders(...), а не bare UnaryPrincipalExtract (доверяющий любому
-// peer'у, выставившему x-kacho-principal-*).
-func TestPublicListener_TrustedPrincipalExtract_HasForwarderAllowlist(t *testing.T) {
-	src := readServeSrc(t)
-
-	for _, l := range []struct {
-		name    string
-		marker  string
-		trusted string
-	}{
-		{"publicUnary", "publicUnary := []grpc.UnaryServerInterceptor{", "grpcsrv.UnaryTrustedPrincipalExtract("},
-		{"publicStream", "publicStream := []grpc.StreamServerInterceptor{", "grpcsrv.StreamTrustedPrincipalExtract("},
-	} {
-		block := braceBlockAfter(t, src, l.marker)
-		if !strings.Contains(block, l.trusted) {
-			t.Fatalf("%s: missing %s — публичный principal НЕ trust-gated", l.name, l.trusted)
-		}
-		if !strings.Contains(block, "grpcsrv.WithTrustedForwarders(") {
-			t.Errorf("%s: TrustedPrincipalExtract без WithTrustedForwarders(...) — "+
-				"любой mTLS-verified peer форвардит произвольного principal'а "+
-				"(principal-spoofing на публичном read-endpoint)", l.name)
-		}
-		if strings.Contains(block, "grpcsrv.UnaryPrincipalExtract(") ||
-			strings.Contains(block, "grpcsrv.StreamPrincipalExtract(") {
-			t.Errorf("%s: bare PrincipalExtract присутствует — forwarded principal доверяется безусловно", l.name)
-		}
-	}
-}
-
-// --- 2. behavioral guard ---
+// --- behavioral guard ---
 
 // TestPublicPrincipalChain_ForwarderAllowlist_DropsNonGateway — точная публичная
 // цепочка (CertIdentityExtract → TrustedPrincipalExtract) с allow-list api-gateway
@@ -98,12 +68,11 @@ func TestPublicPrincipalChain_ForwarderAllowlist_DropsNonGateway(t *testing.T) {
 	})
 }
 
-// publicPrincipalChain собирает ту же unary-цепочку principal-extract, что
-// serve.go навешивает на ПУБЛИЧНЫЙ листенер (после фикса). forwarderSANs
-// пробрасываются как WithTrustedForwarders (allow-list доверенных форвардеров).
+// publicPrincipalChain собирает unary-цепочку principal-extract из РЕАЛЬНОГО
+// serve.go-builder'а newPrincipalInterceptors (public и internal используют один и
+// тот же builder), а не её локальную реконструкцию. forwarderSANs — allow-list
+// доверенных форвардеров.
 func publicPrincipalChain(forwarderSANs ...string) grpc.UnaryServerInterceptor {
-	return chainUnaryServer(
-		grpcsrv.UnaryCertIdentityExtract(),
-		grpcsrv.UnaryTrustedPrincipalExtract(grpcsrv.WithTrustedForwarders(forwarderSANs...)),
-	)
+	unary, _ := newPrincipalInterceptors(forwarderSANs)
+	return chainUnaryServer(unary...)
 }

@@ -16,11 +16,9 @@ package region
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/emptypb"
-	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/PRO-Robotech/kacho-corelib/operations"
 	"github.com/PRO-Robotech/kacho-corelib/validate"
@@ -29,6 +27,7 @@ import (
 	"github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/shared/lro"
 	"github.com/PRO-Robotech/kacho-geo/internal/domain"
 	geoerrors "github.com/PRO-Robotech/kacho-geo/internal/errors"
+	"github.com/PRO-Robotech/kacho-geo/internal/protoconv"
 )
 
 // Pagination — вход для List с cursor-пагинацией (page_size + opaque page_token).
@@ -200,12 +199,9 @@ func (u *UseCase) Delete(ctx context.Context, id string) (*operations.Operation,
 	return &op, nil
 }
 
-// marshalRegion упаковывает domain.Region в Operation.response (geov1.Region,
-// created_at усекается до секунд — единый формат timestamp Kachō).
+// marshalRegion упаковывает domain.Region в Operation.response, делегируя
+// field-mapping единому protoconv.Region (та же проекция, что handler и
+// LRO-recovery — без риска дрейфа).
 func marshalRegion(r *domain.Region) (*anypb.Any, error) {
-	return anypb.New(&geov1.Region{
-		Id:        r.ID,
-		Name:      r.Name,
-		CreatedAt: timestamppb.New(r.CreatedAt.Truncate(time.Second)),
-	})
+	return anypb.New(protoconv.Region(r))
 }

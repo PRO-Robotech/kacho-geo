@@ -116,34 +116,21 @@ func runServe(cfg config.Config) error {
 	// allow-list (default) сохраняет прежнее «любой verified peer доверен» (dev
 	// back-compat) — enforce задаётся конфигом в production.
 	forwarders := cfg.AuthZTrustedForwarderSANs
-	// Public (:9090): cert-identity → trusted-principal (anti-spoof) → authz Check.
-	// Публичная read-only поверхность (Region/Zone.Get/List) тоже trust-gated: без
-	// этого любой mTLS-verified peer мог выставить произвольный x-kacho-principal-*
-	// header и авторизоваться как чужой viewer-principal (principal-spoofing,
-	// CWE-290). Легитимный форвардер end-user principal'а — api-gateway;
-	// consumer'ы vpc/compute/nlb ходят сюда со СВОИМ cert'ом (их principal — не
-	// форвардится, снимается → authz видит их cert-identity/system-fallback).
-	publicUnary := []grpc.UnaryServerInterceptor{
-		grpcsrv.UnaryCertIdentityExtract(),
-		grpcsrv.UnaryTrustedPrincipalExtract(grpcsrv.WithTrustedForwarders(forwarders...)),
-	}
-	publicStream := []grpc.StreamServerInterceptor{
-		grpcsrv.StreamCertIdentityExtract(),
-		grpcsrv.StreamTrustedPrincipalExtract(grpcsrv.WithTrustedForwarders(forwarders...)),
-	}
-	// Internal (:9091): cert-identity → trusted-principal (anti-spoof) →
-	// authz Check. ТОТ ЖЕ per-RPC authz, что и на public — internal не
-	// доверенный (defense-in-depth против lateral movement). Единственный
-	// легитимный форвардер здесь — api-gateway; эскалация verified-но-не-форвардер
-	// peer'а до admin-CRUD Region/Zone (confused-deputy) закрыта allow-list'ом.
-	internalUnary := []grpc.UnaryServerInterceptor{
-		grpcsrv.UnaryCertIdentityExtract(),
-		grpcsrv.UnaryTrustedPrincipalExtract(grpcsrv.WithTrustedForwarders(forwarders...)),
-	}
-	internalStream := []grpc.StreamServerInterceptor{
-		grpcsrv.StreamCertIdentityExtract(),
-		grpcsrv.StreamTrustedPrincipalExtract(grpcsrv.WithTrustedForwarders(forwarders...)),
-	}
+	// Оба листенера получают ОДНУ И ТУ ЖЕ trust-aware principal-цепочку
+	// (cert-identity → trusted-principal с allow-list форвардеров) — единый source
+	// wiring'а через newPrincipalInterceptors, чтобы public и internal не могли
+	// разъехаться по anti-spoof-гарантии при рефакторинге. WithTrustedForwarders
+	// ограничивает форвард end-user principal'а allow-list'ом SAN'ов (api-gateway):
+	//   - Public (:9090): без этого любой mTLS-verified peer мог выставить
+	//     произвольный x-kacho-principal-* header и авторизоваться как чужой
+	//     viewer-principal (principal-spoofing, CWE-290). Consumer'ы vpc/compute/nlb
+	//     ходят сюда со СВОИМ cert'ом — их principal не форвардится, снимается.
+	//   - Internal (:9091): тот же per-RPC authz, что и на public — internal не
+	//     доверенный (defense-in-depth против lateral movement). Эскалация
+	//     verified-но-не-форвардер peer'а до admin-CRUD Region/Zone (confused-deputy)
+	//     закрыта тем же allow-list'ом. Единственный легитимный форвардер — api-gateway.
+	publicUnary, publicStream := newPrincipalInterceptors(forwarders)
+	internalUnary, internalStream := newPrincipalInterceptors(forwarders)
 
 	switch {
 	case aerr == nil && authzIntr != nil:
@@ -188,18 +175,12 @@ func runServe(cfg config.Config) error {
 		grpc.ChainStreamInterceptor(internalStream...),
 	)
 
-	// Публичные read-only сервисы на :9090.
-	geov1.RegisterRegionServiceServer(grpcSrv, handler.NewRegionHandler(regionUC))
-	geov1.RegisterZoneServiceServer(grpcSrv, handler.NewZoneHandler(zoneUC))
-	// Admin CRUD сервисы ТОЛЬКО на cluster-internal :9091 (не на внешнем endpoint).
-	geov1.RegisterInternalRegionServiceServer(internalSrv, handler.NewInternalRegionHandler(regionUC))
-	geov1.RegisterInternalZoneServiceServer(internalSrv, handler.NewInternalZoneHandler(zoneUC))
-	// OperationService (LRO poll) на ОБОИХ листенерах: admin-мутации идут на
-	// internal :9091, и клиент обязан мочь поллить результат через тот же mux;
-	// read-poll допустим и на public :9090. Read-RPC гейтятся authz той же цепочкой.
+	// Регистрация сервисов: public read-only на :9090, admin-CRUD Internal* ТОЛЬКО
+	// на cluster-internal :9091 (запрет #6 — Internal.* не на внешнем endpoint),
+	// OperationService (LRO poll) на обоих. Выделено в registerServices, чтобы
+	// разделение public/internal было под тестом (см. serve_registration_test.go).
 	opHandler := handler.NewOperationHandler(opsRepo)
-	operationpb.RegisterOperationServiceServer(grpcSrv, opHandler)
-	operationpb.RegisterOperationServiceServer(internalSrv, opHandler)
+	registerServices(grpcSrv, internalSrv, regionUC, zoneUC, opHandler)
 
 	listener, err := net.Listen("tcp", ":"+cfg.GrpcPort)
 	if err != nil {
@@ -300,5 +281,77 @@ func validateSecurityConfig(cfg config.Config) error {
 	if !cfg.PublicServerMTLS.Enable || !cfg.InternalServerMTLS.Enable {
 		return errors.New("mTLS required on both listeners: set KACHO_GEO_PUBLIC_SERVER_MTLS_ENABLE and KACHO_GEO_INTERNAL_SERVER_MTLS_ENABLE=true (or KACHO_GEO_AUTHZ_BREAKGLASS=true to bypass)")
 	}
+	// В production/production-strict allow-list доверенных форвардеров ОБЯЗАТЕЛЕН.
+	// Пустой список (config-default) означает «доверять ЛЮБОМУ mTLS-verified peer'у
+	// как форвардеру principal'а» (см. corelib grpcsrv.WithTrustedForwarders): любой
+	// внутренний под с валидным client-cert'ом мог бы выставить произвольный
+	// x-kacho-principal-* header и авторизоваться как чужой subject — principal-
+	// spoofing / confused-deputy до admin-CRUD Region/Zone (:9091). Требуем запинить
+	// хотя бы один непустой SAN (обычно api-gateway SA). Пустая строка в списке —
+	// НЕ форвардер (WithTrustedForwarders отбрасывает "" → trust-any), поэтому
+	// считаем только непустые. В dev — back-compat: пусто допустимо.
+	switch cfg.AuthMode {
+	case "production", "production-strict":
+		if countNonEmpty(cfg.AuthZTrustedForwarderSANs) == 0 {
+			return errors.New("production mode: KACHO_GEO_AUTHZ_TRUSTED_FORWARDER_SANS must pin at least one trusted-forwarder SAN (api-gateway SA); an empty allow-list trusts ANY mTLS-verified peer to forward end-user principals (principal-spoofing / confused-deputy to admin Region/Zone CRUD). Set the api-gateway SAN, or use KACHO_GEO_AUTH_MODE=dev for local back-compat")
+		}
+	}
 	return nil
+}
+
+// countNonEmpty возвращает число непустых строк в срезе. Пустые SAN'ы игнорируются
+// corelib WithTrustedForwarders (отбрасывает "" → пустой allow-list → trust-any),
+// поэтому production-гейт учитывает только непустые записи.
+func countNonEmpty(ss []string) int {
+	n := 0
+	for _, s := range ss {
+		if s != "" {
+			n++
+		}
+	}
+	return n
+}
+
+// newPrincipalInterceptors собирает trust-aware principal-цепочку
+// (cert-identity → trusted-principal с allow-list форвардеров) для ОДНОГО
+// листенера. Единый source-of-truth wiring'а: оба листенера (public :9090 и
+// internal :9091) строятся из него, поэтому anti-spoof-гарантия у них
+// идентична by construction. forwarders (allow-list SAN'ов доверенных
+// форвардеров) пробрасывается в WithTrustedForwarders — verified-но-не-форвардер
+// peer не может форвардить произвольного principal'а.
+func newPrincipalInterceptors(forwarders []string) ([]grpc.UnaryServerInterceptor, []grpc.StreamServerInterceptor) {
+	unary := []grpc.UnaryServerInterceptor{
+		grpcsrv.UnaryCertIdentityExtract(),
+		grpcsrv.UnaryTrustedPrincipalExtract(grpcsrv.WithTrustedForwarders(forwarders...)),
+	}
+	stream := []grpc.StreamServerInterceptor{
+		grpcsrv.StreamCertIdentityExtract(),
+		grpcsrv.StreamTrustedPrincipalExtract(grpcsrv.WithTrustedForwarders(forwarders...)),
+	}
+	return unary, stream
+}
+
+// registerServices раскладывает сервисы по листенерам: public read-only
+// (RegionService/ZoneService) — на publicSrv; admin-CRUD Internal*
+// (InternalRegionService/InternalZoneService) — ТОЛЬКО на internalSrv (запрет #6:
+// Internal.* не публикуется на внешнем endpoint); OperationService (LRO poll) — на
+// обоих (клиент поллит результат admin-мутации через тот же mux, read-poll допустим
+// и на public). Выделено, чтобы разделение public↔internal проверялось тестом через
+// grpc.Server.GetServiceInfo (см. serve_registration_test.go) — регрессия «Internal*
+// уехал на public» ловится, а не only-by-source-review.
+func registerServices(
+	publicSrv, internalSrv grpc.ServiceRegistrar,
+	regionUC *region.UseCase,
+	zoneUC *zone.UseCase,
+	opHandler operationpb.OperationServiceServer,
+) {
+	// Публичные read-only сервисы на :9090.
+	geov1.RegisterRegionServiceServer(publicSrv, handler.NewRegionHandler(regionUC))
+	geov1.RegisterZoneServiceServer(publicSrv, handler.NewZoneHandler(zoneUC))
+	// Admin CRUD сервисы ТОЛЬКО на cluster-internal :9091 (не на внешнем endpoint).
+	geov1.RegisterInternalRegionServiceServer(internalSrv, handler.NewInternalRegionHandler(regionUC))
+	geov1.RegisterInternalZoneServiceServer(internalSrv, handler.NewInternalZoneHandler(zoneUC))
+	// OperationService (LRO poll) на ОБОИХ листенерах.
+	operationpb.RegisterOperationServiceServer(publicSrv, opHandler)
+	operationpb.RegisterOperationServiceServer(internalSrv, opHandler)
 }

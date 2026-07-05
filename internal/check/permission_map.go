@@ -95,11 +95,17 @@ func PermissionMap() authz.RPCMap {
 		// ---- LRO Operation-envelope (Public exempt) ----
 		// Все admin Region/Zone Create/Update/Delete асинхронны и возвращают
 		// Operation, который клиент поллит через OperationService.Get. Оба RPC
-		// подняты на public (:9090) и internal (:9091) листенерах, и оба проходят
-		// fail-closed authz-interceptor: не-замапленный RPC → PermissionDenied.
-		// Op-id непрозрачен и негадаем, авторизуется на data-уровне (creator),
-		// поэтому per-RPC tenant-authz Check неприменим — Public:true exempt.
-		// Зеркалит kacho-vpc / kacho-compute.
+		// подняты на public (:9090) и internal (:9091) листенерах и помечены
+		// Public:true — освобождены от per-RPC authz Check.
+		//
+		// ⚠ Модель контроля доступа к Operation: ЕДИНСТВЕННЫЙ барьер — непрозрачный
+		// негадаемый op-id (capability-style). Data-уровневой проверки creator/owner
+		// в OperationHandler НЕТ (Get/Cancel читают по id без principal-скоупинга) —
+		// не полагайтесь на несуществующую owner-проверку при переиспользовании
+		// паттерна для ресурса с чувствительным LRO-response. Зеркалит текущую
+		// модель kacho-vpc / kacho-compute; ужесточение (creator-equality gate) —
+		// платформенное решение на все три сервиса, не geo-локальное (см. отчёт
+		// sec-hardening-r2: finding «OperationService Cancel/Get authz-exempt»).
 		"/kacho.cloud.operation.OperationService/Get":    {Public: true},
 		"/kacho.cloud.operation.OperationService/Cancel": {Public: true},
 	}

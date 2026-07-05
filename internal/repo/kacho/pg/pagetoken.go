@@ -8,8 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	geoerrors "github.com/PRO-Robotech/kacho-geo/internal/errors"
 )
 
 // pageCursor — непрозрачный курсор, кодируемый в page_token (base64 JSON).
@@ -41,8 +40,11 @@ func decodePageToken(token string) (string, error) {
 	return c.ID, nil
 }
 
-// invalidPageTokenErr превращает мусорный page_token в gRPC InvalidArgument
-// (garbage page_token → InvalidArgument).
+// invalidPageTokenErr оборачивает мусорный page_token в доменный sentinel
+// geoerrors.ErrInvalidArg (не gRPC-status: выбор transport-кода — concern
+// handler/serviceerr, а не repo-адаптера; так же, как все прочие repo-ошибки
+// возвращаются sentinel'ом через dberr.Wrap). serviceerr.ToStatus замапит его в
+// codes.InvalidArgument — единая таблица маппинга, без утечки grpc в adapter-слой.
 func invalidPageTokenErr(err error) error {
-	return status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
+	return fmt.Errorf("%w: invalid page_token: %v", geoerrors.ErrInvalidArg, err)
 }

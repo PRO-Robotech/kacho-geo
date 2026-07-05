@@ -69,6 +69,33 @@ func TestValidateSecurityConfig(t *testing.T) {
 	noAuthz := secure()
 	noAuthz.AuthZIAMGRPCAddr = ""
 
+	// В production/production-strict пустой allow-list доверенных форвардеров —
+	// критичный gap: любой mTLS-verified peer может форвардить произвольного
+	// principal'а (confused-deputy до admin-CRUD). Секьюр-гейт обязан отвергать
+	// старт без запиненного SAN api-gateway. В dev — back-compat, пусто допустимо.
+	prodNoFwd := secure()
+	prodNoFwd.AuthMode = "production"
+
+	prodWithFwd := secure()
+	prodWithFwd.AuthMode = "production"
+	prodWithFwd.AuthZTrustedForwarderSANs = []string{gatewaySAN}
+
+	prodStrictNoFwd := secure()
+	prodStrictNoFwd.AuthMode = "production-strict"
+
+	prodStrictWithFwd := secure()
+	prodStrictWithFwd.AuthMode = "production-strict"
+	prodStrictWithFwd.AuthZTrustedForwarderSANs = []string{gatewaySAN}
+
+	// Пустая строка в списке — не форвардер (corelib WithTrustedForwarders
+	// отбрасывает "" → пустой allow-list → trust-any). Должен отвергаться так же.
+	prodEmptyStrFwd := secure()
+	prodEmptyStrFwd.AuthMode = "production"
+	prodEmptyStrFwd.AuthZTrustedForwarderSANs = []string{""}
+
+	devNoFwd := secure()
+	devNoFwd.AuthMode = "dev"
+
 	cases := []struct {
 		name    string
 		cfg     config.Config
@@ -79,6 +106,12 @@ func TestValidateSecurityConfig(t *testing.T) {
 		{"public mTLS off, no breakglass → err", noMTLS, true},
 		{"internal mTLS off, no breakglass → err", noInternalMTLS, true},
 		{"breakglass bypasses all requirements → ok", config.Config{AuthZBreakglass: true}, false},
+		{"production without trusted forwarders → err", prodNoFwd, true},
+		{"production with trusted forwarder → ok", prodWithFwd, false},
+		{"production-strict without trusted forwarders → err", prodStrictNoFwd, true},
+		{"production-strict with trusted forwarder → ok", prodStrictWithFwd, false},
+		{"production with empty-string forwarder (trust-any) → err", prodEmptyStrFwd, true},
+		{"dev without trusted forwarders → ok (back-compat)", devNoFwd, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

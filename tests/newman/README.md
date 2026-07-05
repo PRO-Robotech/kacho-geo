@@ -52,7 +52,19 @@ gateway.
 
 Authoring + running the suite needs the deployed stack; it cannot be verified by
 `go test` in this repo. The security-critical slice of this gap
-(`ADMIN-NOT-ON-PUBLIC`) is separately guaranteed at wiring level: admin CRUD is
-registered only on the internal `:9091` server in `cmd/kacho-geo/serve.go`, and
-that wiring is covered by `cert_bound_identity_test.go` /
-`public_principal_test.go`.
+(`ADMIN-NOT-ON-PUBLIC`) is separately guaranteed at wiring level: admin CRUD
+(`InternalRegionService`/`InternalZoneService`) is registered ONLY on the internal
+`:9091` server in `cmd/kacho-geo/serve.go` (via `registerServices`), and that
+registration split is asserted by **`cmd/kacho-geo/serve_registration_test.go`**
+(`TestRegisterServices_InternalAdminNotOnPublic` — inspects the real
+`grpc.Server.GetServiceInfo()` of both listeners and fails if any Internal admin
+descriptor appears on the public server).
+
+> Correction (sec-hardening-r2): earlier this note claimed the
+> `ADMIN-NOT-ON-PUBLIC` wiring was covered by `cert_bound_identity_test.go` /
+> `public_principal_test.go`. That was **false** — those tests only verify
+> principal anti-spoof trust-gating, never which service is on which listener. The
+> gap is now closed by `serve_registration_test.go` (Go wiring guard). The Newman
+> black-box case above still remains outstanding for the api-gateway REST boundary
+> (restmux verb/path mapping) — track as a KAC follow-up per rule #12; it is not a
+> substitute for the Go wiring guard and vice-versa.
