@@ -94,21 +94,32 @@ func runServe(cfg config.Config) error {
 	})
 
 	// ── цепочки интерсепторов ──────────────────────────────────────────────
-	// Public (:9090): principal-extract → authz Check.
-	publicUnary := []grpc.UnaryServerInterceptor{grpcsrv.UnaryPrincipalExtract()}
-	publicStream := []grpc.StreamServerInterceptor{grpcsrv.StreamPrincipalExtract()}
-	// Internal (:9091): cert-identity → trusted-principal (anti-spoof) →
-	// authz Check. ТОТ ЖЕ per-RPC authz, что и на public — internal не
-	// доверенный (defense-in-depth против lateral movement).
-	//
 	// WithTrustedForwarders ограничивает форвард end-user principal'а allow-list'ом
 	// SAN'ов (api-gateway SA): verified-но-не-форвардер peer (внутренний сервис со
-	// своим валидным client-cert'ом) НЕ может выдать себя за пользователя и
-	// эскалировать до admin-CRUD Region/Zone (confused-deputy). Единственный
-	// легитимный форвардер здесь — api-gateway; consumer'ы vpc/compute/nlb ходят в
-	// публичный :9090. Пустой allow-list (default) сохраняет прежнее «любой verified
-	// peer доверен» (dev back-compat) — enforce задаётся конфигом в production.
+	// своим валидным client-cert'ом) НЕ может выдать себя за пользователя. Пустой
+	// allow-list (default) сохраняет прежнее «любой verified peer доверен» (dev
+	// back-compat) — enforce задаётся конфигом в production.
 	forwarders := cfg.AuthZTrustedForwarderSANs
+	// Public (:9090): cert-identity → trusted-principal (anti-spoof) → authz Check.
+	// Публичная read-only поверхность (Region/Zone.Get/List) тоже trust-gated: без
+	// этого любой mTLS-verified peer мог выставить произвольный x-kacho-principal-*
+	// header и авторизоваться как чужой viewer-principal (principal-spoofing,
+	// CWE-290). Легитимный форвардер end-user principal'а — api-gateway;
+	// consumer'ы vpc/compute/nlb ходят сюда со СВОИМ cert'ом (их principal — не
+	// форвардится, снимается → authz видит их cert-identity/system-fallback).
+	publicUnary := []grpc.UnaryServerInterceptor{
+		grpcsrv.UnaryCertIdentityExtract(),
+		grpcsrv.UnaryTrustedPrincipalExtract(grpcsrv.WithTrustedForwarders(forwarders...)),
+	}
+	publicStream := []grpc.StreamServerInterceptor{
+		grpcsrv.StreamCertIdentityExtract(),
+		grpcsrv.StreamTrustedPrincipalExtract(grpcsrv.WithTrustedForwarders(forwarders...)),
+	}
+	// Internal (:9091): cert-identity → trusted-principal (anti-spoof) →
+	// authz Check. ТОТ ЖЕ per-RPC authz, что и на public — internal не
+	// доверенный (defense-in-depth против lateral movement). Единственный
+	// легитимный форвардер здесь — api-gateway; эскалация verified-но-не-форвардер
+	// peer'а до admin-CRUD Region/Zone (confused-deputy) закрыта allow-list'ом.
 	internalUnary := []grpc.UnaryServerInterceptor{
 		grpcsrv.UnaryCertIdentityExtract(),
 		grpcsrv.UnaryTrustedPrincipalExtract(grpcsrv.WithTrustedForwarders(forwarders...)),
