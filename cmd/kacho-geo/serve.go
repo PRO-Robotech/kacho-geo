@@ -229,6 +229,13 @@ func validateAuthMode(cfg config.Config, logger *slog.Logger) error {
 		}
 		return nil
 	case "production":
+		// В production plaintext-соединение до БД запрещено: sslmode=disable (и
+		// пустой → libpq-дефолт disable) отвергаем. Конкретный TLS-режим
+		// (require|verify-ca|verify-full) — на усмотрение оператора; строгую
+		// проверку сертификата требует production-strict ниже.
+		if cfg.DBSSLMode == "" || cfg.DBSSLMode == "disable" {
+			return fmt.Errorf("production mode: KACHO_GEO_DB_SSLMODE must not be disable (got %q); use require|verify-ca|verify-full", cfg.DBSSLMode)
+		}
 		return nil
 	case "production-strict":
 		switch cfg.DBSSLMode {
