@@ -1,9 +1,17 @@
 # kacho-geo — Newman black-box coverage (planned)
 
-Status: **coverage gap tracked here** — this repo has strong Go unit +
-integration (testcontainers) coverage, but no black-box Newman suite that
-traverses the api-gateway REST mux yet. Project rule #12 mandates, for every new
-RPC, at least one happy-path + one negative Newman case through the gateway.
+Status: **coverage gap — tracked as `Tests-followup:
+[PRO-Robotech/kacho-geo#10](https://github.com/PRO-Robotech/kacho-geo/issues/10)`**
+(rule #12 exception: a concrete open ticket, authored/run against a deployed
+`kacho-deploy` stack). This repo has strong Go unit + integration (testcontainers)
+coverage, but no black-box Newman suite that traverses the api-gateway REST mux
+yet. Project rule #12 mandates, for every new RPC, at least one happy-path + one
+negative Newman case through the gateway.
+
+> This is **not** an inline-skipped case: the suite lives in a tracked issue with
+> an explicit DoD, not a `pm.test.skip` / TODO. The security-critical slices are
+> independently guarded at the Go layer today (see "Why not blocking this branch"
+> below), so no security regression rides on the suite's absence.
 
 This note is the landing spot for that suite (mirroring the declarative
 `cases/*.py` → `gen.py` layout used by `kacho-vpc/tests/newman`). It is
@@ -41,6 +49,8 @@ public endpoint):
 | `ZONE-CREATE-NEG-GHOSTREGION` | negative | create zone with absent region_id → Operation.error `FAILED_PRECONDITION` |
 | `ZONE-UPDATE-NEG-GHOSTREGION` | negative | re-point region_id to absent region → Operation.error `FAILED_PRECONDITION` |
 | `ADMIN-NOT-ON-PUBLIC` | security | `InternalRegionService`/`InternalZoneService` verbs unreachable on the public `:9090` REST mux |
+| `OP-GET-NEG-FOREIGN` | security | poll another principal's op-id via `OperationService.Get` → `NOT_FOUND` (BOLA owner-scope, sec-hardening-r3) |
+| `OP-CANCEL-NEG-FOREIGN` | security | cancel another principal's in-flight op via `OperationService.Cancel` → `NOT_FOUND`, op stays in-flight |
 
 The `ADMIN-NOT-ON-PUBLIC` case is the black-box guard for the Internal-vs-external
 split (CLAUDE.md §Запреты #6): an api-gateway restmux misregistration that exposed
@@ -66,5 +76,18 @@ descriptor appears on the public server).
 > principal anti-spoof trust-gating, never which service is on which listener. The
 > gap is now closed by `serve_registration_test.go` (Go wiring guard). The Newman
 > black-box case above still remains outstanding for the api-gateway REST boundary
-> (restmux verb/path mapping) — track as a KAC follow-up per rule #12; it is not a
-> substitute for the Go wiring guard and vice-versa.
+> (restmux verb/path mapping) — tracked in
+> [#10](https://github.com/PRO-Robotech/kacho-geo/issues/10) per rule #12; it is
+> not a substitute for the Go wiring guard and vice-versa.
+
+## OperationService owner-scoping (sec-hardening-r3)
+
+The `OP-GET-NEG-FOREIGN` / `OP-CANCEL-NEG-FOREIGN` cases exercise the BOLA gate
+added in round 3: `OperationService.Get`/`Cancel` are ReBAC-exempt (`Public:true`)
+but owner-scoped **in the handler** — a caller that is not the operation's creator
+principal gets `NOT_FOUND` (no-leak), and cannot read or cancel a foreign in-flight
+admin mutation. This is already covered at the Go layer by
+`internal/handler/operation_owner_test.go` (mock) and
+`internal/repo/kacho/pg/operation_owner_integration_test.go` (real pgRepo, SQL
+ownership predicate). The Newman cases validate the same invariant across the REST
+boundary and are enumerated in issue #10.

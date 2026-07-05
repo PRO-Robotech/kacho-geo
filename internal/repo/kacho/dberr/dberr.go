@@ -10,6 +10,7 @@ package dberr
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -46,7 +47,23 @@ func Wrap(err error, resource, id string) error {
 		case "23514": // check_violation
 			return fmt.Errorf("%w: invalid %s", geoerrors.ErrInvalidArg, resource)
 		}
+		// Некатегоризированный SQLSTATE (deadlock 40P01, serialization 40001,
+		// insufficient_privilege 42501, …). Клиенту отдаём фиксированный sentinel
+		// (без leak'а pgx-текста), НО SQLSTATE логируем на repo-границе — иначе
+		// root cause выбрасывается без следа (CWE-390) и оператор при разборе
+		// инцидента не имеет привязки к реальной причине БД.
+		slog.Error("uncategorized postgres error mapped to internal",
+			"sqlstate", pgErr.Code,
+			"pg_message", pgErr.Message,
+			"resource", resource,
+			"id", id)
+		return geoerrors.ErrInternal
 	}
-	// Защитно: сырой pgx-текст наружу не отдаем — фиксированный sentinel.
+	// Не-pg ошибка (context deadline, conn reset, pool-exhaustion). Так же:
+	// клиенту — sentinel, но оригинал логируем для operator-trail.
+	slog.Error("uncategorized db error mapped to internal",
+		"err", err.Error(),
+		"resource", resource,
+		"id", id)
 	return geoerrors.ErrInternal
 }
