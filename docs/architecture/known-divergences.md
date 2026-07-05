@@ -100,3 +100,29 @@ strictly by creator-principal with **no** cluster-admin bypass (unlike
 concept — every mutation already requires `system_admin`, and each operation
 belongs to the admin that created it — so a bypass would be dead surface. This is
 intentional, not a missing feature.
+
+## 5. Config knobs that are intentionally corelib-default, not geo-tunable
+
+**`check.Options` carries no `CheckTimeout`/`DenyRateLimitPerSec`/`CacheTTL`/
+`AllowSystemPrincipal`.** `internal/check` builds the authz interceptor with only
+`ServiceName`, `IAMConn`, `Breakglass`, `Logger`; the four rate/timeout/cache
+tuning knobs were removed as speculative generality (sec-hardening-r6) — no wiring
+path ever set them, so they were always zero. The corelib `authz.NewInterceptor`
+applies its own defaults (`CheckTimeout`→2s, cache-TTL 0, no deny-rate-limit,
+system-principal not allowed), which is the intended geo posture. If geo ever needs
+operator-tunable authz timing it is a new, wired feature — not a re-exposed dead
+seam.
+
+**Breakglass is dev-only (never honored in a production posture).**
+`validateSecurityConfig` rejects `KACHO_GEO_AUTHZ_BREAKGLASS=true` when
+`AuthMode` is `production`/`production-strict` (sec-hardening-r6). Breakglass is a
+full bypass of per-RPC authz Check **and** mTLS; honoring it in production would
+let a single env flag silently disable all authN/authZ on a deployed stack
+(CWE-489), so it is fail-closed at startup exactly like dev-anonymous. It remains
+usable only under dev `AuthMode` for a local emergency.
+
+**Audit actor never blank.** `actorFromCtx` returns the sentinel `"unknown"`
+(not `""`) when a principal is explicitly present in ctx but carries an empty ID,
+so a lost-attribution admin mutation is observable in the `geo_outbox` audit row
+itself rather than a silent blank (CWE-778). The normal no-auth path is unaffected
+— `operations.PrincipalFromContext` yields `system:bootstrap`, never an empty ID.

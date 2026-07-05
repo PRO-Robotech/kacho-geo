@@ -28,14 +28,21 @@ import (
 // <domain>_outbox, parity с compute_outbox / vpc_outbox).
 const outboxTable = "geo_outbox"
 
+// actorUnknown — sentinel для audit-actor, когда атрибуция утрачена (в ctx явно
+// выставлен principal с пустым ID: misconfig / wiring-регрессия). Пишем
+// наблюдаемый маркер в geo_outbox, а НЕ пустую строку, чтобы утрата атрибуции
+// была видна в самой audit-строке при разборе инцидента (CWE-778). В штатном
+// no-auth пути этой ветки нет: PrincipalFromContext отдаёт SystemPrincipal
+// (system:bootstrap), а не пустой ID.
+const actorUnknown = "unknown"
+
 // actorFromCtx форматирует trusted principal вызывающего как "<type>:<id>" для
-// audit-payload (например "user:usr_...", "service_account:sva_..."). Если
-// principal в ctx не выставлен — возвращает "" (не падаем; на E0/без auth
-// PrincipalFromContext отдает system-stub).
+// audit-payload (например "user:usr_...", "service_account:sva_..."). Пустой ID
+// (явно выставленный principal без ID) → actorUnknown-sentinel, а не blank.
 func actorFromCtx(ctx context.Context) string {
 	p := operations.PrincipalFromContext(ctx)
 	if p.ID == "" {
-		return ""
+		return actorUnknown
 	}
 	return p.Type + ":" + p.ID
 }

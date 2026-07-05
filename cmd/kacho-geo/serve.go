@@ -289,6 +289,18 @@ func validateAuthMode(cfg config.Config, logger *slog.Logger) error {
 // клиента, authz Check пропускается). Включать ТОЛЬКО при инциденте.
 func validateSecurityConfig(cfg config.Config) error {
 	if cfg.AuthZBreakglass {
+		// Breakglass — аварийный ПОЛНЫЙ обход per-RPC authz Check + mTLS. В
+		// production posture (production / production-strict) он НЕ honored: иначе
+		// один env-флаг молча снял бы всю аутентификацию/авторизацию на
+		// развёрнутом стенде, а forged x-kacho-principal-header на
+		// plaintext-листенере дал бы admin Region/Zone CRUD (CWE-489
+		// active-debug/emergency mode). Emergency-bypass допустим ТОЛЬКО вне
+		// production (dev / локальный инцидент) — как и dev-anonymous, он под
+		// запретом на любом production-деплое (security.md).
+		switch cfg.AuthMode {
+		case "production", "production-strict":
+			return errors.New("production mode: KACHO_GEO_AUTHZ_BREAKGLASS must not be enabled — it bypasses per-RPC authz Check and mTLS entirely (forged x-kacho-principal headers reach admin Region/Zone CRUD); breakglass is a non-production emergency escape only")
+		}
 		return nil
 	}
 	if cfg.AuthZIAMGRPCAddr == "" {
