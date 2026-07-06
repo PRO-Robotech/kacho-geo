@@ -229,6 +229,72 @@ func TestConcurrentRegionInsert_OneWins(t *testing.T) {
 	require.Equal(t, n-1, dup, "the rest must get ErrAlreadyExists")
 }
 
+// TestConcurrentZoneInsertVsRegionDelete_NoOrphan — контестный кросс-ресурсный
+// FK-путь: Zone.Insert в регион, который ПАРАЛЛЕЛЬНО Region.Delete'ится
+// (FK RESTRICT zones→regions). Правило #10 п.5 требует concurrent-goroutine тест
+// на КАЖДЫЙ спорный within-service инвариант; PK-дубли уже покрыты
+// (TestConcurrentRegionInsert_OneWins / TestConcurrentZoneInsert_OneWins), а этот
+// классический attach-vs-delete путь ранее гонялся лишь последовательно
+// (TestZoneFKRestrict_DeleteRegionWithZones / TestRegionDeleteThenZoneDelete_FKLifecycle).
+//
+// Гарантия Postgres (child-INSERT берёт FOR KEY SHARE на parent-row, parent-DELETE
+// ждёт row-lock): ровно одна операция выигрывает, orphan невозможен ни при каком
+// интерливинге:
+//   - insert выигрывает → zone есть, region есть, delete → FailedPrecondition (RESTRICT);
+//   - delete выигрывает → zone нет, region нет, insert → FailedPrecondition (FK 23503).
+//
+// Обе успеть не могут (orphan-запрет), обе провалиться не могут. Тест ловит
+// регрессию, если кто-то ослабит FK или подменит его software-precheck'ом (TOCTOU).
+func TestConcurrentZoneInsertVsRegionDelete_NoOrphan(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	rr := pg.NewRegionRepo(pool)
+	zr := pg.NewZoneRepo(pool)
+
+	_, err := rr.Insert(ctx, &domain.Region{ID: "region-1", Name: "Region 1"})
+	require.NoError(t, err)
+
+	var (
+		wg        sync.WaitGroup
+		start     = make(chan struct{})
+		insertErr error
+		deleteErr error
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		_, insertErr = zr.Insert(ctx, &domain.Zone{ID: "region-1-a", RegionID: "region-1", Status: domain.ZoneStatusUp})
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		deleteErr = rr.Delete(ctx, "region-1")
+	}()
+	close(start) // старт обеих goroutine одновременно — максимизируем контеншн
+	wg.Wait()
+
+	switch {
+	case insertErr == nil:
+		// insert выиграл: region+zone на месте, delete упёрся в RESTRICT.
+		require.True(t, stderrors.Is(deleteErr, geoerrors.ErrFailedPrecondition),
+			"insert won → region delete must be FailedPrecondition (FK RESTRICT), got %v", deleteErr)
+		_, gerr := rr.Get(ctx, "region-1")
+		require.NoError(t, gerr, "region must still exist while its zone references it")
+		_, zgerr := zr.Get(ctx, "region-1-a")
+		require.NoError(t, zgerr, "the winning zone must be present")
+	case deleteErr == nil:
+		// delete выиграл: region+zone отсутствуют, insert упёрся в FK 23503.
+		require.True(t, stderrors.Is(insertErr, geoerrors.ErrFailedPrecondition),
+			"delete won → zone insert must be FailedPrecondition (FK 23503), got %v", insertErr)
+		_, zgerr := zr.Get(ctx, "region-1-a")
+		require.True(t, stderrors.Is(zgerr, geoerrors.ErrNotFound),
+			"no orphan zone may reference a deleted region, got %v", zgerr)
+	default:
+		t.Fatalf("both ops failed (insert=%v, delete=%v) — exactly one must win", insertErr, deleteErr)
+	}
+}
+
 // strPtr — указатель на строку (опциональный update-параметр).
 func strPtr(s string) *string { return &s }
 
