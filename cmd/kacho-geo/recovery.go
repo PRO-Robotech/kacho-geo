@@ -56,7 +56,7 @@ func startLRORecovery(ctx context.Context, pool *pgxpool.Pool, regionRepo *pg.Re
 		Region: regionReader{repo: regionRepo},
 		Zone:   zoneReader{repo: zoneRepo},
 	}
-	resolver := operationresolver.New(readers, operationresolver.WithLogger(logger))
+	resolver := operationresolver.New(readers, logger)
 	reconciler := operations.NewReconciler(pool, resolver, operations.ReconcilerConfig{
 		Schema:      geoOperationsSchema,
 		OrphanGrace: geoReconcileOrphanGrace,

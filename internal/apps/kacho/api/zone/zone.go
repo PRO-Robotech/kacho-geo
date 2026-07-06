@@ -124,6 +124,13 @@ func (u *UseCase) List(ctx context.Context, p Pagination) ([]*domain.Zone, strin
 // FK-нарушение на вставке → Operation.error FailedPrecondition (источник истины
 // DB, не software-precheck).
 func (u *UseCase) Create(ctx context.Context, id, regionID, name string, st domain.ZoneStatus) (*operations.Operation, error) {
+	// Омитнутый статус (proto default STATUS_UNSPECIFIED=0) → UP: интент схемы
+	// (zones.status DEFAULT 'UP'). repo.Insert всегда пишет явное значение, поэтому
+	// DB-DEFAULT никогда не срабатывает — дефолт применяем здесь, чтобы Create без
+	// status не персистил бессмысленный STATUS_UNSPECIFIED (undefined UP/DOWN).
+	if st == domain.ZoneStatusUnspecified {
+		st = domain.ZoneStatusUp
+	}
 	z := domain.Zone{ID: id, RegionID: regionID, Name: name, Status: st}
 	if err := z.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %s", geoerrors.ErrInvalidArg, err.Error())

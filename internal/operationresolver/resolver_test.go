@@ -55,7 +55,7 @@ func opWith(meta *anypb.Any) operations.Operation {
 func TestResolve_CreateRegion_present_done(t *testing.T) {
 	rs := operationresolver.New(operationresolver.Readers{
 		Region: stubRegionReader{region: &geov1.Region{Id: "region-1", Name: "Region 1"}},
-	})
+	}, nil)
 	res, err := rs.Resolve(context.Background(), opWith(mustAny(t, &geov1.CreateRegionMetadata{RegionId: "region-1"})))
 	if err != nil {
 		t.Fatalf("Resolve err = %v", err)
@@ -75,7 +75,7 @@ func TestResolve_CreateRegion_present_done(t *testing.T) {
 func TestResolve_CreateRegion_absent_interrupted(t *testing.T) {
 	rs := operationresolver.New(operationresolver.Readers{
 		Region: stubRegionReader{err: geoerrors.ErrNotFound},
-	})
+	}, nil)
 	res, err := rs.Resolve(context.Background(), opWith(mustAny(t, &geov1.CreateRegionMetadata{RegionId: "ghost"})))
 	if err != nil {
 		t.Fatalf("Resolve err = %v", err)
@@ -88,7 +88,7 @@ func TestResolve_CreateRegion_absent_interrupted(t *testing.T) {
 func TestResolve_UpdateRegion_present_done(t *testing.T) {
 	rs := operationresolver.New(operationresolver.Readers{
 		Region: stubRegionReader{region: &geov1.Region{Id: "region-1"}},
-	})
+	}, nil)
 	res, err := rs.Resolve(context.Background(), opWith(mustAny(t, &geov1.UpdateRegionMetadata{RegionId: "region-1"})))
 	if err != nil {
 		t.Fatalf("Resolve err = %v", err)
@@ -101,7 +101,7 @@ func TestResolve_UpdateRegion_present_done(t *testing.T) {
 func TestResolve_DeleteRegion_absent_doneEmpty(t *testing.T) {
 	rs := operationresolver.New(operationresolver.Readers{
 		Region: stubRegionReader{err: geoerrors.ErrNotFound},
-	})
+	}, nil)
 	res, err := rs.Resolve(context.Background(), opWith(mustAny(t, &geov1.DeleteRegionMetadata{RegionId: "region-1"})))
 	if err != nil {
 		t.Fatalf("Resolve err = %v", err)
@@ -117,7 +117,7 @@ func TestResolve_DeleteRegion_absent_doneEmpty(t *testing.T) {
 func TestResolve_DeleteRegion_present_interrupted(t *testing.T) {
 	rs := operationresolver.New(operationresolver.Readers{
 		Region: stubRegionReader{region: &geov1.Region{Id: "region-1"}},
-	})
+	}, nil)
 	res, err := rs.Resolve(context.Background(), opWith(mustAny(t, &geov1.DeleteRegionMetadata{RegionId: "region-1"})))
 	if err != nil {
 		t.Fatalf("Resolve err = %v", err)
@@ -132,7 +132,7 @@ func TestResolve_DeleteRegion_present_interrupted(t *testing.T) {
 func TestResolve_CreateZone_present_done(t *testing.T) {
 	rs := operationresolver.New(operationresolver.Readers{
 		Zone: stubZoneReader{zone: &geov1.Zone{Id: "region-1-a", RegionId: "region-1", Status: geov1.Zone_UP}},
-	})
+	}, nil)
 	res, err := rs.Resolve(context.Background(), opWith(mustAny(t, &geov1.CreateZoneMetadata{ZoneId: "region-1-a"})))
 	if err != nil {
 		t.Fatalf("Resolve err = %v", err)
@@ -149,7 +149,7 @@ func TestResolve_CreateZone_present_done(t *testing.T) {
 func TestResolve_DeleteZone_absent_doneEmpty(t *testing.T) {
 	rs := operationresolver.New(operationresolver.Readers{
 		Zone: stubZoneReader{err: geoerrors.ErrNotFound},
-	})
+	}, nil)
 	res, err := rs.Resolve(context.Background(), opWith(mustAny(t, &geov1.DeleteZoneMetadata{ZoneId: "region-1-a"})))
 	if err != nil {
 		t.Fatalf("Resolve err = %v", err)
@@ -167,7 +167,7 @@ func TestResolve_transientReadError_propagates(t *testing.T) {
 	boom := errors.New("connection reset")
 	rs := operationresolver.New(operationresolver.Readers{
 		Region: stubRegionReader{err: boom},
-	})
+	}, nil)
 	_, err := rs.Resolve(context.Background(), opWith(mustAny(t, &geov1.CreateRegionMetadata{RegionId: "region-1"})))
 	if err == nil {
 		t.Fatal("Resolve err = nil, want transient error propagated")
@@ -176,7 +176,7 @@ func TestResolve_transientReadError_propagates(t *testing.T) {
 
 // TestResolve_nilMetadata_skip — операция без метаданных пропускается (Skip).
 func TestResolve_nilMetadata_skip(t *testing.T) {
-	rs := operationresolver.New(operationresolver.Readers{})
+	rs := operationresolver.New(operationresolver.Readers{}, nil)
 	res, err := rs.Resolve(context.Background(), opWith(nil))
 	if err != nil {
 		t.Fatalf("Resolve err = %v", err)
@@ -189,7 +189,7 @@ func TestResolve_nilMetadata_skip(t *testing.T) {
 // TestResolve_unconfiguredReader_skip — metadata есть, но соответствующий reader
 // не сконфигурирован (nil-порт) → Skip (не паника, не ложный Interrupted).
 func TestResolve_unconfiguredReader_skip(t *testing.T) {
-	rs := operationresolver.New(operationresolver.Readers{}) // Zone==nil
+	rs := operationresolver.New(operationresolver.Readers{}, nil) // Zone==nil
 	res, err := rs.Resolve(context.Background(), opWith(mustAny(t, &geov1.CreateZoneMetadata{ZoneId: "region-1-a"})))
 	if err != nil {
 		t.Fatalf("Resolve err = %v", err)
