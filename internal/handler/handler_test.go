@@ -179,6 +179,109 @@ func TestInternalZoneHandler_Create_happy(t *testing.T) {
 	}
 }
 
+// TestRegionHandler_List_happy_mapsItemsAndPropagatesToken — публичный
+// RegionService.List маппит каждый domain.Region через protoconv и пробрасывает
+// NextPageToken из use-case, а page_size/page_token из запроса — в use-case без
+// подмены (guard против дропа токена / свопа size↔token в тонком handler-loop'е).
+func TestRegionHandler_List_happy_mapsItemsAndPropagatesToken(t *testing.T) {
+	var gotPage region.Pagination
+	mock := &repomock.RegionRepo{
+		ListFunc: func(_ context.Context, p region.Pagination) ([]*domain.Region, string, error) {
+			gotPage = p
+			return []*domain.Region{
+				{ID: "region-1", Name: "Region 1"},
+				{ID: "region-2", Name: "Region 2"},
+			}, "next-tok", nil
+		},
+	}
+	uc := region.New(mock, mock, repomock.NewOpsRepo(), serviceerr.ToStatus)
+	h := handler.NewRegionHandler(uc)
+	resp, err := h.List(context.Background(), &geov1.ListRegionsRequest{PageSize: 7, PageToken: "cursor"})
+	if err != nil {
+		t.Fatalf("List err = %v", err)
+	}
+	if got := len(resp.GetRegions()); got != 2 {
+		t.Fatalf("len(regions) = %d, want 2", got)
+	}
+	if resp.GetRegions()[0].GetId() != "region-1" || resp.GetRegions()[0].GetName() != "Region 1" {
+		t.Fatalf("region[0] = %+v", resp.GetRegions()[0])
+	}
+	if resp.GetNextPageToken() != "next-tok" {
+		t.Fatalf("NextPageToken = %q, want next-tok", resp.GetNextPageToken())
+	}
+	if gotPage.PageSize != 7 || gotPage.PageToken != "cursor" {
+		t.Fatalf("pagination passthrough = %+v, want {7 cursor}", gotPage)
+	}
+}
+
+// TestRegionHandler_List_repoError_mapsToStatus — ошибка use-case/repo (напр.
+// malformed page_token → ErrInvalidArg) доезжает через serviceerr.ToStatus как
+// InvalidArgument (handler-loop не глотает ошибку).
+func TestRegionHandler_List_repoError_mapsToStatus(t *testing.T) {
+	mock := &repomock.RegionRepo{
+		ListFunc: func(_ context.Context, _ region.Pagination) ([]*domain.Region, string, error) {
+			return nil, "", geoerrors.ErrInvalidArg
+		},
+	}
+	uc := region.New(mock, mock, repomock.NewOpsRepo(), serviceerr.ToStatus)
+	h := handler.NewRegionHandler(uc)
+	_, err := h.List(context.Background(), &geov1.ListRegionsRequest{PageSize: 10})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("want INVALID_ARGUMENT for repo ErrInvalidArg, got %v", err)
+	}
+}
+
+// TestZoneHandler_List_happy_mapsItemsAndPropagatesToken — тот же контракт для
+// публичного ZoneService.List (маппинг RegionId/Status через protoconv +
+// проброс NextPageToken и page_size/page_token).
+func TestZoneHandler_List_happy_mapsItemsAndPropagatesToken(t *testing.T) {
+	var gotPage zone.Pagination
+	mock := &repomock.ZoneRepo{
+		ListFunc: func(_ context.Context, p zone.Pagination) ([]*domain.Zone, string, error) {
+			gotPage = p
+			return []*domain.Zone{
+				{ID: "region-1-a", RegionID: "region-1", Status: domain.ZoneStatusUp, Name: "Region 1 A"},
+				{ID: "region-1-b", RegionID: "region-1", Status: domain.ZoneStatusUp, Name: "Region 1 B"},
+			}, "z-next", nil
+		},
+	}
+	uc := zone.New(mock, mock, repomock.NewOpsRepo(), serviceerr.ToStatus)
+	h := handler.NewZoneHandler(uc)
+	resp, err := h.List(context.Background(), &geov1.ListZonesRequest{PageSize: 3, PageToken: "z-cursor"})
+	if err != nil {
+		t.Fatalf("List err = %v", err)
+	}
+	if got := len(resp.GetZones()); got != 2 {
+		t.Fatalf("len(zones) = %d, want 2", got)
+	}
+	if resp.GetZones()[0].GetId() != "region-1-a" || resp.GetZones()[0].GetRegionId() != "region-1" ||
+		resp.GetZones()[0].GetStatus() != geov1.Zone_UP {
+		t.Fatalf("zone[0] = %+v", resp.GetZones()[0])
+	}
+	if resp.GetNextPageToken() != "z-next" {
+		t.Fatalf("NextPageToken = %q, want z-next", resp.GetNextPageToken())
+	}
+	if gotPage.PageSize != 3 || gotPage.PageToken != "z-cursor" {
+		t.Fatalf("pagination passthrough = %+v, want {3 z-cursor}", gotPage)
+	}
+}
+
+// TestZoneHandler_List_repoError_mapsToStatus — parity с region: repo-ошибка →
+// serviceerr.ToStatus (InvalidArgument).
+func TestZoneHandler_List_repoError_mapsToStatus(t *testing.T) {
+	mock := &repomock.ZoneRepo{
+		ListFunc: func(_ context.Context, _ zone.Pagination) ([]*domain.Zone, string, error) {
+			return nil, "", geoerrors.ErrInvalidArg
+		},
+	}
+	uc := zone.New(mock, mock, repomock.NewOpsRepo(), serviceerr.ToStatus)
+	h := handler.NewZoneHandler(uc)
+	_, err := h.List(context.Background(), &geov1.ListZonesRequest{PageSize: 10})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("want INVALID_ARGUMENT for repo ErrInvalidArg, got %v", err)
+	}
+}
+
 // TestOperationHandler_Get_notFound — несуществующий operation_id → NOT_FOUND.
 func TestOperationHandler_Get_notFound(t *testing.T) {
 	oh := handler.NewOperationHandler(repomock.NewOpsRepo())
