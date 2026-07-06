@@ -13,8 +13,8 @@ import (
 	geov1 "github.com/PRO-Robotech/kacho-proto/gen/go/kacho/cloud/geo/v1"
 
 	zone "github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/api/zone"
-	"github.com/PRO-Robotech/kacho-geo/internal/domain"
 	"github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/shared/serviceerr"
+	"github.com/PRO-Robotech/kacho-geo/internal/domain"
 	geoerrors "github.com/PRO-Robotech/kacho-geo/internal/errors"
 	"github.com/PRO-Robotech/kacho-geo/internal/repo/kacho/repomock"
 )
