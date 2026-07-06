@@ -223,3 +223,38 @@ that §7's potential future stricter Update-semantics would attach to. This is a
 deliberate KISS-vs-self-documentation trade decided in favor of the named labels;
 the enum comment states the rationale in-code so a maintainer does not mistake the
 identical branch for an omission. Not a defect; not collapsed.
+
+## 9. `Zone.Update` allows re-pointing `region_id` (reparent) — by-design, not an immutability breach
+
+**What.** `Zone.UseCase.Update` treats `region_id` as a freely mutable field: a
+non-empty `region_id` becomes `UpdateParams.RegionID` and the repo issues a
+single-statement `COALESCE` UPDATE (`internal/repo/kacho/pg/zone.go`). An admin can
+therefore change a zone's parent region while keeping the same zone id (e.g.
+id `region-1-a`, `region_id` `region-1` → `region-2`).
+
+**Why it is not a defect.** `region_id` is **not** a hard-immutable field, so the
+update_mask immutability discipline (`api-conventions.md`: immutable field in mask →
+`InvalidArgument`) does not apply to it:
+
+- **The zone id does not encode its region as an enforced contract.** `domain.idFormat`
+  is a generic lowercase-slug regex (`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`); it does **not**
+  require the id to be prefixed by `region_id`. `region-1-a` is an illustrative naming
+  convention, not a parsed/enforced relationship. Nothing reads the region out of the
+  id, so a zone whose id-slug and `region_id` "disagree" is not internally inconsistent
+  data — the only authoritative parent link is the `region_id` column (FK to `regions`).
+- **Reparenting is a legitimate, FK-guarded admin operation.** The target region must
+  exist: a re-point to a ghost region surfaces the DB FK `23503` as `FailedPrecondition`
+  and the whole UPDATE rolls back (tested: `TestZoneUpdateFK_NoSuchRegion` — `region_id`
+  is left unchanged on failure). The mutation path is deliberate and covered
+  (`TestZoneUpdateAndOutbox` asserts a successful partial Update keeps `region_id`
+  when omitted; the re-point path is exercised by the FK test).
+- **The only truly-immutable identity field is the PK `id`.** `Zone.ID` (like
+  `Region.ID`) is admin-assigned and never mutated by Update (`UpdateParams` carries no
+  id; the SQL keys on `WHERE id = $1`). That is the canonical cross-service reference
+  key whose form is the contract (§4) — and it is not touched by reparent.
+
+**Boundary.** If a future product decision makes a zone's region part of its immutable
+identity, the guard is a synchronous `InvalidArgument ("region_id is immutable after
+Zone.Create")` in `Zone.UseCase.Update` plus a DB `CHECK`/composite-key expressing the
+id↔region_id relationship — a new acceptance-gated behavior, not a silent flip. Until
+then, `region_id` is intentionally mutable. Not planned.

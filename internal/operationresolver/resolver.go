@@ -82,25 +82,13 @@ type Resolver struct {
 	log *slog.Logger
 }
 
-// Option — функциональная опция Resolver.
-type Option func(*Resolver)
-
-// WithLogger подключает структурированный логгер (диагностика resolve).
-func WithLogger(l *slog.Logger) Option {
-	return func(r *Resolver) {
-		if l != nil {
-			r.log = l
-		}
+// New конструирует Resolver поверх набора read-портов. logger — структурированный
+// логгер диагностики resolve; nil → slog.Default().
+func New(r Readers, logger *slog.Logger) *Resolver {
+	if logger == nil {
+		logger = slog.Default()
 	}
-}
-
-// New конструирует Resolver поверх набора read-портов.
-func New(r Readers, opts ...Option) *Resolver {
-	rs := &Resolver{r: r, log: slog.Default()}
-	for _, o := range opts {
-		o(rs)
-	}
-	return rs
+	return &Resolver{r: r, log: logger}
 }
 
 // Resolve реализует operations.Resolver: по метаданным осиротевшей операции

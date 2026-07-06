@@ -80,6 +80,39 @@ func TestCreate_happy(t *testing.T) {
 	}
 }
 
+// TestCreate_unspecifiedStatus_defaultsUp — Create без статуса (proto default
+// STATUS_UNSPECIFIED=0) НЕ персистит бессмысленный STATUS_UNSPECIFIED: use-case
+// коэрсит его в UP (интент схемы — zones.status DEFAULT 'UP'; repo.Insert всегда
+// пишет явное значение, поэтому DB-DEFAULT никогда не срабатывает и default'ит
+// именно use-case). Insert получает Zone со Status=UP, response несёт UP.
+func TestCreate_unspecifiedStatus_defaultsUp(t *testing.T) {
+	ops := repomock.NewOpsRepo()
+	var got *domain.Zone
+	mock := &repomock.ZoneRepo{
+		InsertFunc: func(_ context.Context, z *domain.Zone) (*domain.Zone, error) { got = z; return z, nil },
+	}
+	uc := zone.New(mock, mock, ops, serviceerr.ToStatus)
+	op, err := uc.Create(context.Background(), "region-1-a", "region-1", "Zone A", domain.ZoneStatusUnspecified)
+	if err != nil {
+		t.Fatalf("Create err = %v", err)
+	}
+	done := repomock.AwaitOpDone(t, ops, op.ID)
+	if done.Error != nil {
+		t.Fatalf("op.Error = %v", done.Error)
+	}
+	if got == nil || got.Status != domain.ZoneStatusUp {
+		t.Fatalf("Insert got Status = %v, want UP (unspecified must default to UP)", got)
+	}
+	msg, err := done.Response.UnmarshalNew()
+	if err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	z, ok := msg.(*geov1.Zone)
+	if !ok || z.GetStatus() != geov1.Zone_UP {
+		t.Fatalf("response status = %v, want UP", msg)
+	}
+}
+
 // TestUpdate_status — статус задан → передан в repo указателем; response несёт DOWN.
 func TestUpdate_status(t *testing.T) {
 	ops := repomock.NewOpsRepo()

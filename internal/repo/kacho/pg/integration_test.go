@@ -353,6 +353,38 @@ func TestRegionListPagination(t *testing.T) {
 	require.Empty(t, token2, "empty page_token expected on last page")
 }
 
+// TestZoneListPagination — курсорная пагинация Zone.List по id (parity с
+// TestRegionListPagination): Zone.List — отдельный код-путь (свой SELECT со
+// status-колонкой + собственная next-token slice/encode логика out[pageSize-1] /
+// out[:pageSize]), region-тест его транзитивно НЕ покрывает. PageSize=2 отдаёт 2 +
+// непустой токен; повтор с токеном отдаёт остаток (1) + пустой токен. Ловит
+// off-by-one в next-token (лишний/пропущенный курсор на границе pageSize).
+func TestZoneListPagination(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	rr := pg.NewRegionRepo(pool)
+	zr := pg.NewZoneRepo(pool)
+
+	_, err := rr.Insert(ctx, &domain.Region{ID: "region-1", Name: "Region 1"})
+	require.NoError(t, err)
+	for _, id := range []string{"region-1-a", "region-1-b", "region-1-c"} {
+		_, zerr := zr.Insert(ctx, &domain.Zone{ID: id, RegionID: "region-1", Status: domain.ZoneStatusUp})
+		require.NoError(t, zerr)
+	}
+
+	page1, token, err := zr.List(ctx, zone.Pagination{PageSize: 2})
+	require.NoError(t, err)
+	require.Len(t, page1, 2)
+	require.Equal(t, []string{"region-1-a", "region-1-b"}, []string{page1[0].ID, page1[1].ID})
+	require.NotEmpty(t, token, "non-empty page_token expected when more rows remain")
+
+	page2, token2, err := zr.List(ctx, zone.Pagination{PageSize: 2, PageToken: token})
+	require.NoError(t, err)
+	require.Len(t, page2, 1)
+	require.Equal(t, "region-1-c", page2[0].ID, "second page must carry the remaining zone")
+	require.Empty(t, token2, "empty page_token expected on last page")
+}
+
 // TestZoneUpdateFK_NoSuchRegion — Zone.Update, перенаправляющий region_id на
 // несуществующий регион, упирается в FK 23503 zones→regions → FailedPrecondition.
 // Транзакция откатывается целиком, поэтому region_id остаётся прежним (partial

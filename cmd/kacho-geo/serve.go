@@ -135,15 +135,18 @@ func runServe(cfg config.Config) error {
 	//     доверенный (defense-in-depth против lateral movement). Эскалация
 	//     verified-но-не-форвардер peer'а до admin-CRUD Region/Zone (confused-deputy)
 	//     закрыта тем же allow-list'ом. Единственный легитимный форвардер — api-gateway.
-	publicUnary, publicStream := newPrincipalInterceptors(forwarders)
-	internalUnary, internalStream := newPrincipalInterceptors(forwarders)
+	publicPrincipalUnary, publicPrincipalStream := newPrincipalInterceptors(forwarders)
+	internalPrincipalUnary, internalPrincipalStream := newPrincipalInterceptors(forwarders)
 
+	// authzUnary/authzStream — nil, если authz-интерсептор не сконфигурирован
+	// (недостижимо в non-breakglass posture: validateSecurityConfig гарантирует
+	// адрес kacho-iam; при breakglass authzIntr пропускает все RPC).
+	var authzUnary grpc.UnaryServerInterceptor
+	var authzStream grpc.StreamServerInterceptor
 	switch {
 	case aerr == nil && authzIntr != nil:
-		publicUnary = append(publicUnary, authzIntr.Unary())
-		publicStream = append(publicStream, authzIntr.Stream())
-		internalUnary = append(internalUnary, authzIntr.Unary())
-		internalStream = append(internalStream, authzIntr.Stream())
+		authzUnary = authzIntr.Unary()
+		authzStream = authzIntr.Stream()
 		if cfg.AuthZBreakglass {
 			logger.Warn("BREAKGLASS active: per-RPC authz Check bypassed on BOTH listeners (emergency mode)")
 		} else {
@@ -159,15 +162,15 @@ func runServe(cfg config.Config) error {
 		return fmt.Errorf("build authz interceptor: %w", aerr)
 	}
 
-	// ── panic-recovery как OUTERMOST interceptor обоих листенеров ──────────
-	// Ставим ПЕРВЫМ (index 0) в каждую цепочку: grpc.ChainUnary/StreamInterceptor
-	// исполняет их слева-направо, поэтому recovery оборачивает и все нижележащие
-	// interceptor'ы (principal-extract, authz), и сам handler. Без него паника в
-	// любом handler-goroutine уронила бы весь процесс (оба листенера) — DoS.
-	publicUnary = append([]grpc.UnaryServerInterceptor{recoveryUnaryInterceptor(logger)}, publicUnary...)
-	publicStream = append([]grpc.StreamServerInterceptor{recoveryStreamInterceptor(logger)}, publicStream...)
-	internalUnary = append([]grpc.UnaryServerInterceptor{recoveryUnaryInterceptor(logger)}, internalUnary...)
-	internalStream = append([]grpc.StreamServerInterceptor{recoveryStreamInterceptor(logger)}, internalStream...)
+	// ── финальные упорядоченные цепочки обоих листенеров ───────────────────
+	// Порядок собирается в assembleUnaryChain/assembleStreamChain (единая точка,
+	// под guard-тестом serve_interceptor_order_test.go) вместо императивного
+	// append/prepend по четырём срезам: recovery ПЕРВЫМ (outermost), затем
+	// principal-extract, затем authz. Оба листенера строятся идентично.
+	publicUnary := assembleUnaryChain(recoveryUnaryInterceptor(logger), publicPrincipalUnary, authzUnary)
+	publicStream := assembleStreamChain(recoveryStreamInterceptor(logger), publicPrincipalStream, authzStream)
+	internalUnary := assembleUnaryChain(recoveryUnaryInterceptor(logger), internalPrincipalUnary, authzUnary)
+	internalStream := assembleStreamChain(recoveryStreamInterceptor(logger), internalPrincipalStream, authzStream)
 
 	// ── server-creds (mTLS обязателен на обоих листенерах, кроме breakglass —
 	// это проверено validateSecurityConfig выше) ──
@@ -382,6 +385,35 @@ func newPrincipalInterceptors(forwarders []string) ([]grpc.UnaryServerIntercepto
 		grpcsrv.StreamTrustedPrincipalExtract(grpcsrv.WithTrustedForwarders(forwarders...)),
 	}
 	return unary, stream
+}
+
+// assembleUnaryChain строит финальную упорядоченную unary-цепочку ОДНОГО листенера
+// и фиксирует load-bearing инвариант порядка в одном месте (под guard-тестом
+// serve_interceptor_order_test.go): recovery ПЕРВЫМ (index 0, outermost — оборачивает
+// все нижележащие интерсепторы и сам handler; иначе паника в интерсепторе/handler'е
+// уронила бы процесс — DoS), затем principal-extract (cert-identity → trusted-
+// principal), затем — если задан — authz Check ПОСЛЕ извлечения principal'а (Check
+// обязан видеть уже извлечённого субъекта). authz==nil → слот отсутствует.
+func assembleUnaryChain(recovery grpc.UnaryServerInterceptor, principal []grpc.UnaryServerInterceptor, authz grpc.UnaryServerInterceptor) []grpc.UnaryServerInterceptor {
+	chain := make([]grpc.UnaryServerInterceptor, 0, len(principal)+2)
+	chain = append(chain, recovery)
+	chain = append(chain, principal...)
+	if authz != nil {
+		chain = append(chain, authz)
+	}
+	return chain
+}
+
+// assembleStreamChain — stream-аналог assembleUnaryChain (тот же инвариант порядка:
+// recovery outermost → principal → authz).
+func assembleStreamChain(recovery grpc.StreamServerInterceptor, principal []grpc.StreamServerInterceptor, authz grpc.StreamServerInterceptor) []grpc.StreamServerInterceptor {
+	chain := make([]grpc.StreamServerInterceptor, 0, len(principal)+2)
+	chain = append(chain, recovery)
+	chain = append(chain, principal...)
+	if authz != nil {
+		chain = append(chain, authz)
+	}
+	return chain
 }
 
 // registerServices раскладывает сервисы по листенерам: public read-only
