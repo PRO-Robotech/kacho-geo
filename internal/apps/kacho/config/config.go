@@ -54,8 +54,11 @@ type Config struct {
 	// AuthZTrustedForwarderSANs — allow-list cert-identity SAN'ов, которым разрешено
 	// форвардить end-user principal в x-kacho-principal-* metadata (обычно
 	// единственный — api-gateway SA, SAN spiffe://kacho.cloud/ns/<ns>/sa/kacho-api-gateway).
-	// Принимает comma-separated список. Пусто (default) → любой mTLS-verified peer
-	// доверен как форвардер (паритет с insecure dev back-compat и прочими сервисами).
+	// Принимает comma-separated список. Пустой (default) allow-list — НЕ молчаливый
+	// trust-any: non-breakglass старт fail-closed ОТКАЗЫВАЕТ (validateSecurityConfig),
+	// пока не запинен хотя бы один SAN — либо, только в dev, не выставлен явный
+	// AuthZTrustAnyForwarder opt-in (в production/production-strict trust-any не honored
+	// вовсе — обязателен непустой SAN).
 	// Задаётся в production для defense-in-depth против confused-deputy/principal-
 	// spoofing: внутренний сервис со своим валидным client-cert'ом не сможет выдать
 	// себя за пользователя — ни эскалировать до admin-CRUD Region/Zone на internal-
