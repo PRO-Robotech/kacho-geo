@@ -40,6 +40,12 @@ type Config struct {
 	// Не выставляется на внешнем endpoint api-gateway — только cluster-internal.
 	InternalGrpcPort string `envconfig:"KACHO_GEO_INTERNAL_PORT" default:"9091"`
 
+	// MetricsAddr — адрес cluster-internal diagnostic HTTP-listener'а (/metrics).
+	// Default ":9095" — отдельный internal-порт (НЕ маршрутизируется на external
+	// endpoint; cluster-internal Prometheus-scrape LRO-durability метрик worker'а и
+	// reconciler'а). Пустое значение явно отключает listener (back-compat).
+	MetricsAddr string `envconfig:"KACHO_GEO_METRICS_ADDR" default:":9095"`
+
 	// AuthMode — fail-closed режим: dev | production | production-strict.
 	// Дефолт — production (secure-by-default): при незаданном env raw-деплой
 	// поднимается в fail-closed-режиме (breakglass/trust-any bypass'ы inert),

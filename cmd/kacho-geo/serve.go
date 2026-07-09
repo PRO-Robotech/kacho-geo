@@ -31,6 +31,7 @@ import (
 	"github.com/PRO-Robotech/kacho-geo/internal/apps/kacho/shared/serviceerr"
 	"github.com/PRO-Robotech/kacho-geo/internal/check"
 	"github.com/PRO-Robotech/kacho-geo/internal/handler"
+	"github.com/PRO-Robotech/kacho-geo/internal/observability/metrics"
 	"github.com/PRO-Robotech/kacho-geo/internal/repo/kacho/pg"
 )
 
@@ -58,10 +59,26 @@ func runServe(cfg config.Config) error {
 	}
 	defer pool.Close()
 
+	// ── observability: Prometheus-адаптер LRO-durability метрик (worker
+	// terminal-write retries/failures + inflight, reconciler runs/errors/orphans).
+	// Реальный Recorder заменяет NopRecorder default-registry — иначе исчезал
+	// сигнал «async Region/Zone мутация не финализуется» (terminal-write
+	// exhaustion оставляет durable done=false, клиент виснет в polling).
+	metricsAdapter := metrics.New(buildVersion, buildCommit)
+
 	// ── LRO-стек: общая operations-таблица (corelib) каталога kacho-geo.
 	// Admin-мутации Region/Zone async — UseCase пишет LRO-строку и запускает
 	// фоновый worker; клиент поллит OperationService.Get(id).
 	opsRepo := operations.NewRepo(pool, "kacho_geo")
+
+	// Подключаем Recorder+Logger к package-level default-registry LRO-worker'а и
+	// поднимаем его dispatcher-loop ДО приёма трафика (ConfigureDefault→Start).
+	// dispatch/drain через operations.Run/operations.Wait уже целятся в
+	// default-registry — здесь добавляется только недостающая recorder/lifecycle
+	// проводка.
+	if err = startLROWorker(metricsAdapter, logger); err != nil {
+		return err
+	}
 
 	// ── use-cases (repo → use-case → handler) ──────────────────────────────
 	// CQRS-порты Reader/Writer связываются раздельно (сейчас обе стороны — один
@@ -80,7 +97,7 @@ func runServe(cfg config.Config) error {
 	// по committed-реальности ресурса; периодический Run(ctx) ниже — backstop.
 	// Это тот backstop, который обещает комментарий про shutdown-drain (worker
 	// добирает только свои in-flight; crash mid-op закрывает reconciler).
-	lroReconciler := startLRORecovery(ctx, pool, regionRepo, zoneRepo, logger)
+	lroReconciler := startLRORecovery(ctx, pool, regionRepo, zoneRepo, metricsAdapter, logger)
 
 	// ── authz: per-RPC OpenFGA Check на ОБОИХ листенерах (AuthN+AuthZ везде —
 	// internal :9091 НЕ освобожден). Ребро geo→iam Check дозванивается в
@@ -216,10 +233,28 @@ func runServe(cfg config.Config) error {
 		"public_port", cfg.GrpcPort,
 		"internal_port", cfg.InternalGrpcPort)
 
+	// ── cluster-internal diagnostic-listener (/metrics). Пустой MetricsAddr явно
+	// отключает его (back-compat). Ошибка привязки порта видна синхронно здесь; сам
+	// Serve крутится на фоновой goroutine и гасится diagShutdown на ctx.Done().
+	diagTask, diagShutdown, err := startDiagnosticListener(cfg.MetricsAddr, metricsAdapter, logger)
+	if err != nil {
+		_ = listener.Close()
+		_ = internalListener.Close()
+		return fmt.Errorf("diagnostic listener: %w", err)
+	}
+	if diagTask != nil {
+		go func() {
+			if derr := diagTask(); derr != nil {
+				logger.Error("diagnostic listener stopped", "err", derr)
+			}
+		}()
+	}
+
 	shutdownDone := make(chan struct{})
 	go func() {
 		defer close(shutdownDone)
 		<-ctx.Done()
+		diagShutdown(context.Background())
 		internalSrv.GracefulStop()
 		grpcSrv.GracefulStop()
 		// Дренируем in-flight LRO-worker'ы: SIGTERM не должен оставить async-мутацию
