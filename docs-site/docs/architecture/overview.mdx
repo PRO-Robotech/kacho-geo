@@ -34,6 +34,7 @@ flowchart TD
     <tr><td><strong>repo (adapter)</strong></td><td><code>internal/repo/kacho/pg/</code></td><td>Реализация порта на handwritten pgx; SQLSTATE → sentinel; outbox-emit в TX</td></tr>
     <tr><td><strong>handler</strong></td><td><code>internal/handler/</code></td><td>Тонкий transport: parse → use-case → format (protoconv, map-err). Без бизнес-логики</td></tr>
     <tr><td><strong>check (authz)</strong></td><td><code>internal/check/</code></td><td>Authz-интерсептор + IAM Check-клиент + permission-map (<code>geo.*</code>)</td></tr>
+    <tr><td><strong>operationresolver</strong></td><td><code>internal/operationresolver/</code></td><td>Доменный resolver осиротевших LRO поверх read-портов repo (сверка операции с committed-реальностью)</td></tr>
     <tr><td><strong>config</strong></td><td><code>internal/apps/kacho/config/</code></td><td>YAML/ENV-конфиг (corelib <code>config.LoadPrefixed("KACHO_GEO")</code>)</td></tr>
     <tr><td><strong>composition root</strong></td><td><code>cmd/kacho-geo/</code></td><td>Единственное место wiring (serve.go); <code>cmd/migrator/</code> — миграции</td></tr>
   </tbody>
@@ -45,8 +46,9 @@ flowchart TD
 ## База данных — database-per-service
 
 Kachō Geo владеет схемой `kacho_geo` в PostgreSQL и не делит её ни с кем. Within-service
-инварианты выражены на уровне БД (FK / PK), а не software-проверками. Схема создаётся
-baseline-миграцией `0001_initial` (goose).
+инварианты выражены на уровне БД (FK / PK / CHECK), а не software-проверками. Схему накатывают
+goose-миграции: baseline `0001_initial` (таблицы `regions`, `zones`, `geo_outbox`), затем
+`CHECK` на `zones.status` и таблица `operations` (LRO admin-мутаций).
 
 ```mermaid
 erDiagram
@@ -71,6 +73,14 @@ erDiagram
     jsonb payload
     timestamptz created_at
   }
+  operations {
+    text id PK "prefix geo + crockford"
+    bool done
+    bytea metadata_data "Any (Create/Update/Delete<R>Metadata)"
+    bytea response_data "Region | Zone | Empty"
+    integer error_code
+    text principal_id "владелец операции"
+  }
 ```
 
 <table>
@@ -79,6 +89,7 @@ erDiagram
     <tr><td><code>regions</code></td><td>Справочник регионов</td><td><code>id</code> — TEXT PK (admin-assigned)</td></tr>
     <tr><td><code>zones</code></td><td>Справочник зон доступности</td><td><code>region_id → regions(id) ON DELETE RESTRICT</code>; индекс по <code>region_id</code></td></tr>
     <tr><td><code>geo_outbox</code></td><td>Audit-журнал admin-мутаций</td><td><code>BIGSERIAL</code>; LISTEN/NOTIFY-триггер на INSERT</td></tr>
+    <tr><td><code>operations</code></td><td>LRO admin-мутаций (структура — corelib <code>operations.Repo</code>)</td><td><code>id</code> TEXT PK (префикс <code>geo</code>); <code>principal_*</code> — владелец; <code>account_id</code> всегда NULL (каталог cluster-scoped)</td></tr>
   </tbody>
 </table>
 
@@ -117,13 +128,33 @@ flowchart LR
 
 Подробнее о ключах конфигурации — [Конфигурация](/install/configuration).
 
+## Async LRO admin-мутации
+
+Admin-мутации Region/Zone следуют стандартной async-модели Kachō (мутации → `Operation`). RPC
+`Internal*Service.Create/Update/Delete` синхронно валидирует формат id, пишет строку `operations`
+(`done=false`) и запускает worker-горутину (движок — `kacho-corelib/operations`); клиент сразу
+получает квитанцию-`Operation`. Worker выполняет доменную запись в БД и финализирует строку
+(`done=true`, `response=Region/Zone/Empty` либо `error=google.rpc.Status`). Клиент поллит
+`OperationService.Get(id)` до `done=true`.
+
+- **Владелец операции** — принципал, создавший её (`principal_*` строки). `OperationService`
+  помечен exempt от per-RPC ReBAC-Check; вместо этого `GetOwned` / `CancelOwned` энфорсят
+  ownership-предикат **в SQL** (within-service инвариант, без software-TOCTOU). Чужой /
+  несуществующий id → одинаковый `NOT_FOUND` (no existence-oracle).
+- **Durable-восстановление**: если сервис упал между записью `Operation` и финализацией, orphan
+  добирает reconciler (corelib-движок + доменный `operationresolver` kacho-geo) — сверяет
+  осиротевшую операцию с committed-реальностью ресурса и приводит статус в соответствие (не
+  re-drive worker'а).
+
+Полное описание модели, полей и REST — [Operations (LRO)](/api/operations).
+
 ## Audit-outbox в одной транзакции
 
 Admin-мутации (Create / Update / Delete Region/Zone) атомарно пишут строку в `geo_outbox` **в
-той же writer-транзакции**, что и сама мутация. Так аудит не теряется: либо изменение и его
-запись в журнал коммитятся вместе, либо откатываются вместе. Это конвенция Kachō
-(`<domain>_outbox`). Триггер на INSERT шлёт `pg_notify` — подписчики узнают о новых событиях
-без поллинга.
+той же writer-транзакции**, что и доменная запись (в worker'е операции). Так аудит не теряется:
+либо изменение и его запись в журнал коммитятся вместе, либо откатываются вместе. Это конвенция
+Kachō (`<domain>_outbox`). Триггер на INSERT шлёт `pg_notify` — подписчики узнают о новых
+событиях без поллинга.
 
 ## Место в платформе — leaf-сервис
 

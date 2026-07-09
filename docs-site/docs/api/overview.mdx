@@ -69,19 +69,20 @@ Kachō Geo управляет **двумя типами ресурсов**. Об
   <tbody>
     <tr><td><code>Get</code></td><td><code>GET</code></td><td><code>/geo/v1/regions/&#123;id&#125;</code></td><td>public · sync</td></tr>
     <tr><td><code>List</code></td><td><code>GET</code></td><td><code>/geo/v1/regions</code></td><td>public · sync</td></tr>
-    <tr><td><code>Create</code></td><td><code>POST</code></td><td><code>/geo/v1/regions</code></td><td>internal · sync</td></tr>
-    <tr><td><code>Update</code></td><td><code>PATCH</code></td><td><code>/geo/v1/regions/&#123;id&#125;</code></td><td>internal · sync</td></tr>
-    <tr><td><code>Delete</code></td><td><code>DELETE</code></td><td><code>/geo/v1/regions/&#123;id&#125;</code></td><td>internal · sync</td></tr>
+    <tr><td><code>Create</code></td><td><code>POST</code></td><td><code>/geo/v1/regions</code></td><td>internal · async</td></tr>
+    <tr><td><code>Update</code></td><td><code>PATCH</code></td><td><code>/geo/v1/regions/&#123;id&#125;</code></td><td>internal · async</td></tr>
+    <tr><td><code>Delete</code></td><td><code>DELETE</code></td><td><code>/geo/v1/regions/&#123;id&#125;</code></td><td>internal · async</td></tr>
   </tbody>
 </table>
 
-Для зон шаблон аналогичен (`/geo/v1/zones`, `/geo/v1/zones/{id}`).
+Для зон шаблон аналогичен (`/geo/v1/zones`, `/geo/v1/zones/{id}`). Статус async-операции клиент
+забирает по `GET /operations/{operationId}` (см. [Operations (LRO)](/api/operations)).
 
-:::note Catalog-паттерн: мутации синхронные
-В платформе Kachō мутации ресурсов обычно асинхронны и возвращают `Operation`. Region и Zone —
-исключение: это **admin-managed reference-каталог** с назначаемыми администратором неизменяемыми
-id. Их admin-мутации возвращают **сам ресурс синхронно** (не `Operation`). Это осознанное,
-зафиксированное проектное решение для справочных каталогов.
+:::note Read — sync, admin-мутации — async Operation
+`RegionService` / `ZoneService` `Get` / `List` — синхронное чтение справочника. Admin-мутации
+(`Internal*Service` `Create` / `Update` / `Delete`) следуют стандартной async-модели Kachō: RPC
+возвращает `Operation` (`done: false`), а результат клиент забирает поллингом
+`OperationService.Get(id)`. Единая конвенция «мутации → `Operation`» — [Operations (LRO)](/api/operations).
 :::
 
 ## Формат JSON
@@ -130,6 +131,13 @@ RFC 3339 (`2026-06-24T10:00:00Z`).
 
 Если отношения нет → `PERMISSION_DENIED` (HTTP `403`). Недоступность kacho-iam на request-path —
 `UNAVAILABLE` (fail-closed). Подробнее — [Архитектура](/architecture/overview).
+
+:::note OperationService — owner-scope вместо ReBAC
+`OperationService.Get` / `Cancel` (поллинг async-мутаций) **освобождены** от per-RPC
+ReBAC-Check: `operationId` opaque, а доступ ограничен **владельцем** операции (её
+создателем-админом). Предикат владельца энфорсится в SQL; чужой / несуществующий id → одинаковый
+`NOT_FOUND` (без existence-oracle). Подробнее — [Operations (LRO)](/api/operations).
+:::
 
 ```mermaid
 flowchart LR
@@ -211,16 +219,18 @@ Kachō. БД хранит микросекунды, но клиент видит
     <tr><td><code>List</code></td><td><code>GET /geo/v1/regions</code></td><td>public · sync</td></tr>
     <tr><td rowSpan="2"><code>ZoneService</code></td><td><code>Get</code></td><td><code>GET /geo/v1/zones/&#123;id&#125;</code></td><td>public · sync</td></tr>
     <tr><td><code>List</code></td><td><code>GET /geo/v1/zones</code></td><td>public · sync</td></tr>
-    <tr><td rowSpan="3"><code>InternalRegionService</code></td><td><code>Create</code></td><td><code>POST /geo/v1/regions</code></td><td>internal · sync</td></tr>
-    <tr><td><code>Update</code></td><td><code>PATCH /geo/v1/regions/&#123;id&#125;</code></td><td>internal · sync</td></tr>
-    <tr><td><code>Delete</code></td><td><code>DELETE /geo/v1/regions/&#123;id&#125;</code></td><td>internal · sync</td></tr>
-    <tr><td rowSpan="3"><code>InternalZoneService</code></td><td><code>Create</code></td><td><code>POST /geo/v1/zones</code></td><td>internal · sync</td></tr>
-    <tr><td><code>Update</code></td><td><code>PATCH /geo/v1/zones/&#123;id&#125;</code></td><td>internal · sync</td></tr>
-    <tr><td><code>Delete</code></td><td><code>DELETE /geo/v1/zones/&#123;id&#125;</code></td><td>internal · sync</td></tr>
+    <tr><td rowSpan="3"><code>InternalRegionService</code></td><td><code>Create</code></td><td><code>POST /geo/v1/regions</code></td><td>internal · async</td></tr>
+    <tr><td><code>Update</code></td><td><code>PATCH /geo/v1/regions/&#123;id&#125;</code></td><td>internal · async</td></tr>
+    <tr><td><code>Delete</code></td><td><code>DELETE /geo/v1/regions/&#123;id&#125;</code></td><td>internal · async</td></tr>
+    <tr><td rowSpan="3"><code>InternalZoneService</code></td><td><code>Create</code></td><td><code>POST /geo/v1/zones</code></td><td>internal · async</td></tr>
+    <tr><td><code>Update</code></td><td><code>PATCH /geo/v1/zones/&#123;id&#125;</code></td><td>internal · async</td></tr>
+    <tr><td><code>Delete</code></td><td><code>DELETE /geo/v1/zones/&#123;id&#125;</code></td><td>internal · async</td></tr>
+    <tr><td rowSpan="2"><code>OperationService</code></td><td><code>Get</code></td><td><code>GET /operations/&#123;id&#125;</code></td><td>public + internal · sync (owner-scope)</td></tr>
+    <tr><td><code>Cancel</code></td><td><code>POST /operations/&#123;id&#125;:cancel</code></td><td>public + internal · sync (owner-scope)</td></tr>
   </tbody>
 </table>
 
 :::tip Дальше
 Конкретные поля, тела запросов, примеры и ресурс-специфичные ошибки — на страницах ресурсов:
-[Region](/api/region), [Zone](/api/zone).
+[Region](/api/region), [Zone](/api/zone). Async-мутации и поллинг — [Operations (LRO)](/api/operations).
 :::

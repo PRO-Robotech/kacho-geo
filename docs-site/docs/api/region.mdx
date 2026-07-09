@@ -33,9 +33,10 @@ Consumer-сервисы (Compute, VPC и др.) ссылаются на реги
 
 ## Методы
 
-Чтение (`Get` / `List`) — публичные, на listener `:9090`. Администрирование
-(`Create` / `Update` / `Delete`) — `InternalRegionService` на cluster-internal listener
-`:9091`, синхронное (catalog-паттерн, возвращает ресурс, не `Operation`).
+Чтение (`Get` / `List`) — публичные и **синхронные**, на listener `:9090`. Администрирование
+(`Create` / `Update` / `Delete`) — `InternalRegionService` на cluster-internal listener `:9091`,
+**асинхронное**: RPC возвращает `Operation` (`done: false`), результат забирается поллингом
+`OperationService.Get(id)` (см. [Operations (LRO)](/api/operations)).
 
 ### Get — получить регион
 
@@ -93,9 +94,10 @@ Consumer-сервисы (Compute, VPC и др.) ссылаются на реги
 
 <ApiOperation method="POST" endpoint="/geo/v1/regions">
 
-Создаёт регион с **явно заданным** администратором id. Синхронная операция: ответ — сам
-ресурс. Доступна только на cluster-internal listener (`InternalRegionService`, требует
-отношение `system_admin`).
+Создаёт регион с **явно заданным** администратором id. Асинхронная операция: RPC возвращает
+`Operation` (`done: false`), созданный `Region` приходит в `response` при `done: true`.
+Доступна только на cluster-internal listener (`InternalRegionService`, требует отношение
+`system_admin`).
 
 <CodeBlock language="bash">
   {dedent`
@@ -109,12 +111,20 @@ Consumer-сервисы (Compute, VPC и др.) ссылаются на реги
 <CodeBlock language="json">
   {dedent`
     {
-      "id": "region-2",
-      "name": "Region 2",
-      "createdAt": "2026-06-24T10:10:00Z"
+      "id": "geoXXXXXXXXXXXXXXXX",
+      "description": "create region",
+      "createdAt": "2026-06-24T10:10:00Z",
+      "done": false,
+      "metadata": {
+        "@type": "type.googleapis.com/kacho.cloud.geo.v1.CreateRegionMetadata",
+        "regionId": "region-2"
+      }
     }
   `}
 </CodeBlock>
+
+Затем поллинг `GET /operations/{id}` до `done: true` — в `response` будет созданный `Region`
+(см. [Operations (LRO)](/api/operations)).
 
 </ApiOperation>
 
@@ -123,7 +133,8 @@ Consumer-сервисы (Compute, VPC и др.) ссылаются на реги
 <ApiOperation method="PATCH" endpoint="/geo/v1/regions/{id}">
 
 Меняет изменяемые поля региона (на данный момент — `name`). Идентификатор изменить нельзя
-(immutable PK). Синхронная internal-операция.
+(immutable PK). Асинхронная internal-операция: возвращает `Operation`, обновлённый `Region` —
+в `response` при `done: true`.
 
 <CodeBlock language="bash">
   {dedent`
@@ -140,9 +151,10 @@ Consumer-сервисы (Compute, VPC и др.) ссылаются на реги
 
 <ApiOperation method="DELETE" endpoint="/geo/v1/regions/{id}">
 
-Удаляет регион. Если к региону привязана хотя бы одна [Zone](/api/zone), удаление блокируется
-(`FAILED_PRECONDITION`) внешним ключом `ON DELETE RESTRICT` — сначала удаляются зоны.
-Синхронная internal-операция.
+Удаляет регион. Асинхронная internal-операция: возвращает `Operation`, при успехе `response` —
+`google.protobuf.Empty`. Если к региону привязана хотя бы одна [Zone](/api/zone), удаление
+блокируется внешним ключом `ON DELETE RESTRICT` — эта ошибка приходит **внутри** операции
+(`error` = `FAILED_PRECONDITION` при `done: true`), сначала удаляются зоны.
 
 <CodeBlock language="bash">
   {dedent`
@@ -156,13 +168,15 @@ Consumer-сервисы (Compute, VPC и др.) ссылаются на реги
 ## Ошибки и граничные случаи
 
 <table>
-  <thead><tr><th>Ситуация</th><th>Код</th><th>Поведение</th></tr></thead>
+  <thead><tr><th>Ситуация</th><th>Код</th><th>Где / поведение</th></tr></thead>
   <tbody>
-    <tr><td>Get/Delete несуществующего региона</td><td><code>NOT_FOUND</code></td><td><code>"Region &lt;id&gt; not found"</code></td></tr>
-    <tr><td>Create с уже занятым id</td><td><code>ALREADY_EXISTS</code></td><td>PK-конфликт по <code>id</code></td></tr>
-    <tr><td><strong>Delete региона, к которому привязаны зоны</strong></td><td><code>FAILED_PRECONDITION</code></td><td>FK <code>Zone.regionId → Region.id ON DELETE RESTRICT</code> блокирует удаление; сначала удалить зоны</td></tr>
+    <tr><td>Get несуществующего региона</td><td><code>NOT_FOUND</code></td><td>sync gRPC-ошибка · <code>"Region &lt;id&gt; not found"</code></td></tr>
+    <tr><td>Delete несуществующего региона</td><td><code>NOT_FOUND</code></td><td>в <code>Operation.error</code> (async)</td></tr>
+    <tr><td>Create с уже занятым id</td><td><code>ALREADY_EXISTS</code></td><td>в <code>Operation.error</code> (async) · PK-конфликт по <code>id</code></td></tr>
+    <tr><td><strong>Delete региона, к которому привязаны зоны</strong></td><td><code>FAILED_PRECONDITION</code></td><td>в <code>Operation.error</code> (async) · FK <code>Zone.regionId → Region.id ON DELETE RESTRICT</code>; сначала удалить зоны</td></tr>
+    <tr><td>Малформ / пустой id в admin-мутации</td><td><code>INVALID_ARGUMENT</code></td><td>sync gRPC-ошибка · <code>Operation</code> не создаётся</td></tr>
     <tr><td>Попытка изменить <code>id</code></td><td>—</td><td><code>id</code> — immutable PK; задаётся только при Create, не меняется</td></tr>
-    <tr><td>Read без отношения <code>viewer</code> / admin без <code>system_admin</code></td><td><code>PERMISSION_DENIED</code></td><td>Authz-Check не прошёл</td></tr>
+    <tr><td>Read без отношения <code>viewer</code> / admin без <code>system_admin</code></td><td><code>PERMISSION_DENIED</code></td><td>sync · Authz-Check не прошёл (до записи <code>Operation</code>)</td></tr>
   </tbody>
 </table>
 

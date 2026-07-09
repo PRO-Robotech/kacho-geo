@@ -20,7 +20,7 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'API',
       collapsed: false,
-      items: ['api/overview', 'api/region', 'api/zone'],
+      items: ['api/overview', 'api/region', 'api/zone', 'api/operations'],
     },
   ],
 }

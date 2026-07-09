@@ -46,8 +46,9 @@ import hero from '@site/src/css/hero.module.css'
 по идентификатору и валидируют его через API Kachō Geo.
 
 API следует **конвенциям Kachō**: плоские (flat) ресурсы, camelCase JSON, REST-пути
-`/<service>/v1/<resource>`, единый формат ошибок `{code, message, details[]}`. Чтение —
-синхронное; администрирование справочника — синхронные мутации (catalog-паттерн, см. ниже).
+`/<service>/v1/<resource>`, единый формат ошибок `{code, message, details[]}`. Чтение
+каталога — синхронное; admin-мутации Region/Zone — асинхронные, возвращают `Operation`
+(поллинг `OperationService.Get`, см. ниже).
 
 :::info Control-plane only
 Kachō Geo управляет **описанием топологии** (какие регионы/зоны есть, их статусы). Это
@@ -159,8 +160,8 @@ flowchart LR
   </div>
   <div className={hero.featureCard}>
     <span className={hero.featureIcon}>▤</span>
-    <span className={hero.featureTitle}>Sync-каталог</span>
-    <span className={hero.featureBody}>Чтение синхронное; admin-мутации Region/Zone тоже синхронные — это reference-каталог, не LRO.</span>
+    <span className={hero.featureTitle}>Sync read · async admin</span>
+    <span className={hero.featureBody}>Чтение каталога синхронное; admin-мутации Region/Zone — async <code>Operation</code> (поллинг <code>OperationService.Get</code>).</span>
   </div>
   <div className={hero.featureCard}>
     <span className={hero.featureIcon}>⛓</span>

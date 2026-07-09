@@ -32,7 +32,8 @@ import dedent from 'ts-dedent'
 
 Схема `kacho_geo` управляется goose-миграциями (встроены в бинарь через `embed.FS`).
 Baseline-миграция `0001_initial` создаёт таблицы `regions`, `zones` (FK `RESTRICT`) и audit-
-таблицу `geo_outbox` с LISTEN/NOTIFY-триггером. Применяются **отдельным** бинарём
+таблицу `geo_outbox` с LISTEN/NOTIFY-триггером; последующие добавляют `CHECK` на `zones.status`
+и таблицу `operations` (LRO admin-мутаций). Применяются **отдельным** бинарём
 `bin/kacho-migrator` (не самим сервисом на старте).
 
 <CodeBlock language="bash">
