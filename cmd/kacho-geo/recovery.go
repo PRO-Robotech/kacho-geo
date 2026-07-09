@@ -51,7 +51,7 @@ const (
 // вешается на супервизор в runServe. Ошибка startup-recovery — не фатальна
 // (best-effort backstop; периодический Run добьёт позже): boot не валится из-за
 // transient DB-сбоя reconciler'а.
-func startLRORecovery(ctx context.Context, pool *pgxpool.Pool, regionRepo *pg.RegionRepo, zoneRepo *pg.ZoneRepo, logger *slog.Logger) *operations.Reconciler {
+func startLRORecovery(ctx context.Context, pool *pgxpool.Pool, regionRepo *pg.RegionRepo, zoneRepo *pg.ZoneRepo, rec operations.Recorder, logger *slog.Logger) *operations.Reconciler {
 	readers := operationresolver.Readers{
 		Region: regionReader{repo: regionRepo},
 		Zone:   zoneReader{repo: zoneRepo},
@@ -63,6 +63,7 @@ func startLRORecovery(ctx context.Context, pool *pgxpool.Pool, regionRepo *pg.Re
 		BatchSize:   geoReconcileBatchSize,
 		Interval:    geoReconcileInterval,
 	},
+		operations.WithReconcilerRecorder(rec),
 		operations.WithReconcilerLogger(logger.With(slog.String("component", "lro-reconciler"))),
 	)
 
