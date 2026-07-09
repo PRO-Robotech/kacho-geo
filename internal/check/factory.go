@@ -43,9 +43,12 @@ func NewInterceptor(opts Options) (*authz.Interceptor, error) {
 		}
 		client = NewIAMCheckClient(opts.IAMConn)
 	}
-	// CheckTimeout / DenyRateLimitPerSec / AllowSystemPrincipal / Cache-TTL не
-	// прокидываются из конфига geo — corelib authz применяет свои дефолты
-	// (CheckTimeout→2s, cache-TTL 0). Держим их на дефолте намеренно: отдельных
+	// CheckTimeout / DenyRateLimitPerSec / AllowSystemPrincipal не прокидываются из
+	// конфига geo — corelib authz применяет свои дефолты (CheckTimeout→2s). Cache
+	// передаём ЯВНО как authz.NewCache(0): corelib резолвит ttl≤0 в свой дефолтный
+	// 5s positive-result-кеш (см. corelib authz/cache.go — кешируются только
+	// allowed=true; miss всегда безопасен, fallback на авторитетный Check; revoke
+	// инвалидируется через pg_notify). Держим на дефолтах намеренно: отдельных
 	// operator-knob'ов для них geo не заводит.
 	return authz.NewInterceptor(authz.InterceptorOptions{
 		ServiceName: opts.ServiceName,
