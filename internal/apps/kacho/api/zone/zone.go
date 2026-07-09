@@ -98,8 +98,8 @@ func New(reader Reader, writer Writer, ops operations.Repo, errStatus ErrToStatu
 
 // Get возвращает Zone по id.
 func (u *UseCase) Get(ctx context.Context, id string) (*domain.Zone, error) {
-	if id == "" {
-		return nil, geoerrors.ErrInvalidArg
+	if err := domain.ValidateID("zone id", id); err != nil {
+		return nil, fmt.Errorf("%w: %s", geoerrors.ErrInvalidArg, err.Error())
 	}
 	z, err := u.reader.Get(ctx, id)
 	if err != nil {
@@ -164,6 +164,9 @@ func (u *UseCase) Update(ctx context.Context, id, regionID, name string, st doma
 	}
 	var p UpdateParams
 	if regionID != "" {
+		if err := domain.ValidateID("zone region_id", regionID); err != nil {
+			return nil, fmt.Errorf("%w: %s", geoerrors.ErrInvalidArg, err.Error())
+		}
 		p.RegionID = &regionID
 	}
 	if name != "" {

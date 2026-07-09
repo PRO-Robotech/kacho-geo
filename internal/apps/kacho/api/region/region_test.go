@@ -27,6 +27,22 @@ func TestGet_emptyID_invalidArg(t *testing.T) {
 	}
 }
 
+// TestGet_malformedID_invalidArg — синтаксически невалидный (не-slug) id
+// отвергается СИНХРОННО InvalidArgument первым стейтментом, без round-trip в
+// reader.Get (NotFound зарезервирован под well-formed-но-отсутствующий id).
+func TestGet_malformedID_invalidArg(t *testing.T) {
+	mock := &repomock.RegionRepo{
+		GetFunc: func(_ context.Context, _ string) (*domain.Region, error) {
+			t.Fatal("reader.Get must not be called for a malformed id")
+			return nil, nil
+		},
+	}
+	uc := region.New(mock, mock, repomock.NewOpsRepo(), serviceerr.ToStatus)
+	if _, err := uc.Get(context.Background(), "Region!!"); !stderrors.Is(err, geoerrors.ErrInvalidArg) {
+		t.Fatalf("Get('Region!!') err = %v, want ErrInvalidArg", err)
+	}
+}
+
 func TestGet_happy(t *testing.T) {
 	mock := &repomock.RegionRepo{
 		GetFunc: func(_ context.Context, id string) (*domain.Region, error) {
