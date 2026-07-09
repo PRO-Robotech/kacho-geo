@@ -200,6 +200,56 @@ func TestUpdate_notFound(t *testing.T) {
 	}
 }
 
+// TestUpdate_malformedID_invalidArg — не-slug id отвергается СИНХРОННО
+// InvalidArgument первым стейтментом (парити с Get): операция в таблицу не
+// пишется, writer.Update не вызывается. Без format-check malformed-id ушёл бы в
+// UPDATE → RETURNING 0 rows → async NotFound (неверный контракт) + осевшая spurious
+// operations-строка.
+func TestUpdate_malformedID_invalidArg(t *testing.T) {
+	ops := repomock.NewOpsRepo()
+	mock := &repomock.RegionRepo{
+		UpdateFunc: func(_ context.Context, _ string, _ *string) (*domain.Region, error) {
+			t.Fatal("writer.Update must not be called for a malformed id")
+			return nil, nil
+		},
+	}
+	uc := region.New(mock, mock, ops, serviceerr.ToStatus)
+	if _, err := uc.Update(context.Background(), "Region 1!", "New Name"); !stderrors.Is(err, geoerrors.ErrInvalidArg) {
+		t.Fatalf("Update('Region 1!') err = %v, want ErrInvalidArg", err)
+	}
+}
+
+// TestUpdate_emptyID_invalidArg — пустой id отвергается синхронно (парити с Get).
+func TestUpdate_emptyID_invalidArg(t *testing.T) {
+	uc := region.New(&repomock.RegionRepo{}, &repomock.RegionRepo{}, repomock.NewOpsRepo(), serviceerr.ToStatus)
+	if _, err := uc.Update(context.Background(), "", "New Name"); !stderrors.Is(err, geoerrors.ErrInvalidArg) {
+		t.Fatalf("Update('') err = %v, want ErrInvalidArg", err)
+	}
+}
+
+// TestDelete_malformedID_invalidArg — не-slug id отвергается СИНХРОННО
+// InvalidArgument (парити с Get); writer.Delete не вызывается, операция не пишется.
+func TestDelete_malformedID_invalidArg(t *testing.T) {
+	mock := &repomock.RegionRepo{
+		DeleteFunc: func(_ context.Context, _ string) error {
+			t.Fatal("writer.Delete must not be called for a malformed id")
+			return nil
+		},
+	}
+	uc := region.New(mock, mock, repomock.NewOpsRepo(), serviceerr.ToStatus)
+	if _, err := uc.Delete(context.Background(), "Region 1!"); !stderrors.Is(err, geoerrors.ErrInvalidArg) {
+		t.Fatalf("Delete('Region 1!') err = %v, want ErrInvalidArg", err)
+	}
+}
+
+// TestDelete_emptyID_invalidArg — пустой id отвергается синхронно (парити с Get).
+func TestDelete_emptyID_invalidArg(t *testing.T) {
+	uc := region.New(&repomock.RegionRepo{}, &repomock.RegionRepo{}, repomock.NewOpsRepo(), serviceerr.ToStatus)
+	if _, err := uc.Delete(context.Background(), ""); !stderrors.Is(err, geoerrors.ErrInvalidArg) {
+		t.Fatalf("Delete('') err = %v, want ErrInvalidArg", err)
+	}
+}
+
 func TestList_garbagePageSize_invalidArg(t *testing.T) {
 	uc := region.New(&repomock.RegionRepo{}, &repomock.RegionRepo{}, repomock.NewOpsRepo(), serviceerr.ToStatus)
 	_, _, err := uc.List(context.Background(), region.Pagination{PageSize: 1_000_000})
