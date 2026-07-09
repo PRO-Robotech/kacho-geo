@@ -23,4 +23,10 @@ var (
 	ErrInvalidArg = errors.New("invalid argument")
 	// ErrInternal — некатегоризированная ошибка БД (без утечки pgx-текста).
 	ErrInternal = errors.New("internal database error")
+	// ErrCanceled — запрос отменён вызывающей стороной (context.Canceled): нормальный
+	// исход client-cancel, не серверный сбой. Маппится в codes.Canceled, НЕ Internal.
+	ErrCanceled = errors.New("canceled")
+	// ErrDeadlineExceeded — истёк per-call deadline (context.DeadlineExceeded):
+	// latency/timeout, не серверный сбой. Маппится в codes.DeadlineExceeded, НЕ Internal.
+	ErrDeadlineExceeded = errors.New("deadline exceeded")
 )

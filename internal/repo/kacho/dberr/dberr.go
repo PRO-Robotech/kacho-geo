@@ -8,6 +8,7 @@
 package dberr
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -21,11 +22,13 @@ import (
 // Wrap транслирует ошибку pgx/pgconn в sentinel kacho-geo, прикрепляя стабильное
 // сообщение без утечек ("<Resource> <id> not found"). Маппинг SQLSTATE:
 //
-//	pgx.ErrNoRows → ErrNotFound
-//	23505 UNIQUE  → ErrAlreadyExists
-//	23503 FK      → ErrFailedPrecondition
-//	23514 CHECK   → ErrInvalidArg
-//	все остальное → ErrInternal
+//	pgx.ErrNoRows            → ErrNotFound
+//	23505 UNIQUE             → ErrAlreadyExists
+//	23503 FK                 → ErrFailedPrecondition
+//	23514 CHECK              → ErrInvalidArg
+//	context.Canceled         → ErrCanceled          (client-cancel, не серверный сбой)
+//	context.DeadlineExceeded → ErrDeadlineExceeded  (истёкший per-call timeout)
+//	все остальное            → ErrInternal
 //
 // resource — человекочитаемый ярлык ("Region" / "Zone"); id — id ресурса (может быть "").
 func Wrap(err error, resource, id string) error {
@@ -34,6 +37,17 @@ func Wrap(err error, resource, id string) error {
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("%w: %s %s not found", geoerrors.ErrNotFound, resource, id)
+	}
+	// Отмена/дедлайн вызывающей стороны (client-cancel, истёкший per-call timeout) —
+	// НЕ серверный сбой: коллапс в ErrInternal раздул бы server-error budget и залил
+	// бы ERROR-лог ложным «uncategorized» именно во время latency/timeout-инцидентов.
+	// Отдаём выделенные sentinel'ы (→ codes.Canceled / codes.DeadlineExceeded) и не
+	// логируем на ERROR (нормальный исход, не root-cause для operator-trail).
+	if errors.Is(err, context.Canceled) {
+		return geoerrors.ErrCanceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return geoerrors.ErrDeadlineExceeded
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
