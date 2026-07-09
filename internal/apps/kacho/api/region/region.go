@@ -91,8 +91,8 @@ func New(reader Reader, writer Writer, ops operations.Repo, errStatus ErrToStatu
 
 // Get возвращает Region по id.
 func (u *UseCase) Get(ctx context.Context, id string) (*domain.Region, error) {
-	if id == "" {
-		return nil, geoerrors.ErrInvalidArg
+	if err := domain.ValidateID("region id", id); err != nil {
+		return nil, fmt.Errorf("%w: %s", geoerrors.ErrInvalidArg, err.Error())
 	}
 	r, err := u.reader.Get(ctx, id)
 	if err != nil {

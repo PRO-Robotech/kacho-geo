@@ -27,6 +27,21 @@ func TestGet_emptyID_invalidArg(t *testing.T) {
 	}
 }
 
+// TestGet_malformedID_invalidArg — не-slug id отвергается СИНХРОННО
+// InvalidArgument первым стейтментом, без round-trip в reader.Get.
+func TestGet_malformedID_invalidArg(t *testing.T) {
+	mock := &repomock.ZoneRepo{
+		GetFunc: func(_ context.Context, _ string) (*domain.Zone, error) {
+			t.Fatal("reader.Get must not be called for a malformed id")
+			return nil, nil
+		},
+	}
+	uc := zone.New(mock, mock, repomock.NewOpsRepo(), serviceerr.ToStatus)
+	if _, err := uc.Get(context.Background(), "Zone!!"); !stderrors.Is(err, geoerrors.ErrInvalidArg) {
+		t.Fatalf("Get('Zone!!') err = %v, want ErrInvalidArg", err)
+	}
+}
+
 func TestGet_happy(t *testing.T) {
 	mock := &repomock.ZoneRepo{
 		GetFunc: func(_ context.Context, id string) (*domain.Zone, error) {
@@ -114,6 +129,24 @@ func TestCreate_unspecifiedStatus_defaultsUp(t *testing.T) {
 }
 
 // TestUpdate_status — статус задан → передан в repo указателем; response несёт DOWN.
+// TestUpdate_malformedRegionID_invalidArg — малформ new region_id отвергается
+// СИНХРОННО InvalidArgument (парити с Create-путём и с name-веткой), а не уходит
+// в UPDATE и не ловится FK как SQLSTATE 23503 → FailedPrecondition. writer.Update
+// не вызывается.
+func TestUpdate_malformedRegionID_invalidArg(t *testing.T) {
+	mock := &repomock.ZoneRepo{
+		UpdateFunc: func(_ context.Context, _ string, _ zone.UpdateParams) (*domain.Zone, error) {
+			t.Fatal("writer.Update must not be called for a malformed region_id")
+			return nil, nil
+		},
+	}
+	uc := zone.New(mock, mock, repomock.NewOpsRepo(), serviceerr.ToStatus)
+	_, err := uc.Update(context.Background(), "region-1-a", "Bad_Region!", "", domain.ZoneStatusUnspecified)
+	if !stderrors.Is(err, geoerrors.ErrInvalidArg) {
+		t.Fatalf("Update malformed region_id err = %v, want ErrInvalidArg", err)
+	}
+}
+
 func TestUpdate_status(t *testing.T) {
 	ops := repomock.NewOpsRepo()
 	var got zone.UpdateParams
