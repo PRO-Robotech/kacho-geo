@@ -4,6 +4,8 @@
 package handler
 
 import (
+	"time"
+
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/PRO-Robotech/kacho-corelib/operations"
@@ -18,11 +20,13 @@ func operationToProto(op *operations.Operation) *operationpb.Operation {
 		return nil
 	}
 	p := &operationpb.Operation{
-		Id:                   op.ID,
-		Description:          op.Description,
-		CreatedAt:            timestamppb.New(op.CreatedAt),
+		Id:          op.ID,
+		Description: op.Description,
+		// Truncate до секунд — единый apiconv-формат timestamp'ов на wire
+		// (микросекунды с БД не текут наружу, как и в protoconv.ts для Region/Zone).
+		CreatedAt:            timestamppb.New(op.CreatedAt.Truncate(time.Second)),
 		CreatedBy:            op.CreatedBy,
-		ModifiedAt:           timestamppb.New(op.ModifiedAt),
+		ModifiedAt:           timestamppb.New(op.ModifiedAt.Truncate(time.Second)),
 		Done:                 op.Done,
 		Metadata:             op.Metadata,
 		PrincipalType:        op.Principal.Type,
