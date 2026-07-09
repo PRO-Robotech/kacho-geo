@@ -38,6 +38,10 @@ func ToStatus(err error) error {
 		return status.Error(codes.FailedPrecondition, strip(err, geoerrors.ErrFailedPrecondition))
 	case errors.Is(err, geoerrors.ErrInvalidArg):
 		return status.Error(codes.InvalidArgument, strip(err, geoerrors.ErrInvalidArg))
+	case errors.Is(err, geoerrors.ErrCanceled):
+		return status.Error(codes.Canceled, "request canceled")
+	case errors.Is(err, geoerrors.ErrDeadlineExceeded):
+		return status.Error(codes.DeadlineExceeded, "request deadline exceeded")
 	case errors.Is(err, geoerrors.ErrInternal):
 		return status.Error(codes.Internal, "internal database error")
 	}

@@ -5,7 +5,9 @@ package dberr_test
 
 import (
 	"bytes"
+	"context"
 	stderrors "errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -107,5 +109,42 @@ func TestWrap_uncategorizedNonPg_logged(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "connection reset by peer") {
 		t.Fatalf("raw db error not captured in server log; log=%q", buf.String())
+	}
+}
+
+// TestWrap_contextCanceled_notInternal — клиентская отмена (client-cancelled
+// Get/List) НЕ должна коллапсировать в ErrInternal: иначе нормальная отмена
+// рапортуется как INTERNAL (раздувает server-error budget, ложные «server bug»
+// алерты). context.Canceled → ErrCanceled (→ codes.Canceled в serviceerr).
+func TestWrap_contextCanceled_notInternal(t *testing.T) {
+	buf := withCapturedDefaultLogger(t)
+	err := dberr.Wrap(context.Canceled, "Region", "r-1")
+	if stderrors.Is(err, geoerrors.ErrInternal) {
+		t.Fatalf("Wrap(context.Canceled) = %v, must NOT be ErrInternal", err)
+	}
+	if !stderrors.Is(err, geoerrors.ErrCanceled) {
+		t.Fatalf("Wrap(context.Canceled) = %v, want ErrCanceled", err)
+	}
+	// Нормальная отмена не должна ERROR-флудить лог «uncategorized».
+	if strings.Contains(buf.String(), "uncategorized") {
+		t.Fatalf("cancellation flooded ERROR-level uncategorized log: %q", buf.String())
+	}
+}
+
+// TestWrap_deadlineExceeded_notInternal — истёкший per-call deadline
+// (api-gateway timeout) → ErrDeadlineExceeded (→ codes.DeadlineExceeded), не
+// INTERNAL. Также обёрнутый deadline (через fmt.Errorf %w) распознаётся.
+func TestWrap_deadlineExceeded_notInternal(t *testing.T) {
+	buf := withCapturedDefaultLogger(t)
+	wrapped := fmt.Errorf("query failed: %w", context.DeadlineExceeded)
+	err := dberr.Wrap(wrapped, "Zone", "z-1")
+	if stderrors.Is(err, geoerrors.ErrInternal) {
+		t.Fatalf("Wrap(DeadlineExceeded) = %v, must NOT be ErrInternal", err)
+	}
+	if !stderrors.Is(err, geoerrors.ErrDeadlineExceeded) {
+		t.Fatalf("Wrap(DeadlineExceeded) = %v, want ErrDeadlineExceeded", err)
+	}
+	if strings.Contains(buf.String(), "uncategorized") {
+		t.Fatalf("deadline flooded ERROR-level uncategorized log: %q", buf.String())
 	}
 }
