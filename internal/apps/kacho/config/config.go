@@ -41,7 +41,12 @@ type Config struct {
 	InternalGrpcPort string `envconfig:"KACHO_GEO_INTERNAL_PORT" default:"9091"`
 
 	// AuthMode — fail-closed режим: dev | production | production-strict.
-	AuthMode string `envconfig:"KACHO_GEO_AUTH_MODE" default:"dev"`
+	// Дефолт — production (secure-by-default): при незаданном env raw-деплой
+	// поднимается в fail-closed-режиме (breakglass/trust-any bypass'ы inert),
+	// как iam/vpc/nlb. dev — явный opt-in: локальные фикстуры и dev-профиль
+	// deploy-стенда выставляют его через env (security.md «любой деплой —
+	// production-mode; KACHO_*_AUTH_MODE=dev на кластере — security-долг»).
+	AuthMode string `envconfig:"KACHO_GEO_AUTH_MODE" default:"production"`
 
 	// AuthZIAMGRPCAddr — internal endpoint kacho-iam для per-RPC Check
 	// (ребро geo→iam authz). Пусто + Breakglass=false → интерсептор НЕ
