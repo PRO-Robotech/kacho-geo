@@ -141,11 +141,13 @@ func (u *UseCase) Create(ctx context.Context, id, name string) (*operations.Oper
 }
 
 // Update принимает запрос на смену name у Region (admin-only) и возвращает
-// Operation. Пустой id → синхронный InvalidArgument. name="" → поле не меняется
-// (nil в repo). Доменная запись и not-found/конфликт → в Operation.error.
+// Operation. Пустой/малформ id → синхронный InvalidArgument первым стейтментом
+// (парити с Get: format-check ДО записи LRO-строки — malformed-id не должен
+// персистить spurious operation и уходить в UPDATE → async NotFound). name="" →
+// поле не меняется (nil в repo). Доменная запись и not-found/конфликт → в Operation.error.
 func (u *UseCase) Update(ctx context.Context, id, name string) (*operations.Operation, error) {
-	if id == "" {
-		return nil, geoerrors.ErrInvalidArg
+	if err := domain.ValidateID("region id", id); err != nil {
+		return nil, fmt.Errorf("%w: %s", geoerrors.ErrInvalidArg, err.Error())
 	}
 	var namePtr *string
 	if name != "" {
@@ -174,12 +176,13 @@ func (u *UseCase) Update(ctx context.Context, id, name string) (*operations.Oper
 }
 
 // Delete принимает запрос на удаление Region (admin-only) и возвращает Operation.
-// Пустой id → синхронный InvalidArgument. Блокировка FK RESTRICT (есть зоны) и
+// Пустой/малформ id → синхронный InvalidArgument первым стейтментом (парити с Get:
+// format-check ДО записи LRO-строки). Блокировка FK RESTRICT (есть зоны) и
 // not-found → в Operation.error (FailedPrecondition / NotFound). Успех →
 // response=Empty (без тела ресурса).
 func (u *UseCase) Delete(ctx context.Context, id string) (*operations.Operation, error) {
-	if id == "" {
-		return nil, geoerrors.ErrInvalidArg
+	if err := domain.ValidateID("region id", id); err != nil {
+		return nil, fmt.Errorf("%w: %s", geoerrors.ErrInvalidArg, err.Error())
 	}
 	op, err := operations.NewFromContext(ctx, lro.OperationPrefix,
 		fmt.Sprintf("Delete region %s", id),

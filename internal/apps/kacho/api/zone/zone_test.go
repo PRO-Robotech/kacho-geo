@@ -244,3 +244,43 @@ func TestDelete_emptyID_invalidArg(t *testing.T) {
 		t.Fatalf("Delete('') err = %v, want ErrInvalidArg", err)
 	}
 }
+
+// TestUpdate_malformedID_invalidArg — не-slug id (target zone) отвергается
+// СИНХРОННО InvalidArgument первым стейтментом (парити с Get и с region_id-веткой):
+// writer.Update не зовётся, spurious operations-строка не пишется. Без format-check
+// malformed-id ушёл бы в UPDATE → RETURNING 0 rows → async NotFound (неверный контракт).
+func TestUpdate_malformedID_invalidArg(t *testing.T) {
+	mock := &repomock.ZoneRepo{
+		UpdateFunc: func(_ context.Context, _ string, _ zone.UpdateParams) (*domain.Zone, error) {
+			t.Fatal("writer.Update must not be called for a malformed id")
+			return nil, nil
+		},
+	}
+	uc := zone.New(mock, mock, repomock.NewOpsRepo(), serviceerr.ToStatus)
+	if _, err := uc.Update(context.Background(), "Zone A!", "", "new-name", domain.ZoneStatusUnspecified); !stderrors.Is(err, geoerrors.ErrInvalidArg) {
+		t.Fatalf("Update('Zone A!') err = %v, want ErrInvalidArg", err)
+	}
+}
+
+// TestUpdate_emptyID_invalidArg — пустой id отвергается синхронно (парити с Get).
+func TestUpdate_emptyID_invalidArg(t *testing.T) {
+	uc := zone.New(&repomock.ZoneRepo{}, &repomock.ZoneRepo{}, repomock.NewOpsRepo(), serviceerr.ToStatus)
+	if _, err := uc.Update(context.Background(), "", "", "new-name", domain.ZoneStatusUnspecified); !stderrors.Is(err, geoerrors.ErrInvalidArg) {
+		t.Fatalf("Update('') err = %v, want ErrInvalidArg", err)
+	}
+}
+
+// TestDelete_malformedID_invalidArg — не-slug id отвергается СИНХРОННО
+// InvalidArgument (парити с Get); writer.Delete не вызывается, операция не пишется.
+func TestDelete_malformedID_invalidArg(t *testing.T) {
+	mock := &repomock.ZoneRepo{
+		DeleteFunc: func(_ context.Context, _ string) error {
+			t.Fatal("writer.Delete must not be called for a malformed id")
+			return nil
+		},
+	}
+	uc := zone.New(mock, mock, repomock.NewOpsRepo(), serviceerr.ToStatus)
+	if _, err := uc.Delete(context.Background(), "Zone A!"); !stderrors.Is(err, geoerrors.ErrInvalidArg) {
+		t.Fatalf("Delete('Zone A!') err = %v, want ErrInvalidArg", err)
+	}
+}

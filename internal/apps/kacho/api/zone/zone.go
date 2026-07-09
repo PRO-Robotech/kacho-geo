@@ -155,12 +155,14 @@ func (u *UseCase) Create(ctx context.Context, id, regionID, name string, st doma
 }
 
 // Update принимает запрос на partial-смену Zone (admin-only) и возвращает
-// Operation. Пустой id → синхронный InvalidArgument. Пустые regionID/name и
-// unspecified-status НЕ меняют поле (nil → COALESCE в repo). not-found/конфликт →
-// Operation.error.
+// Operation. Пустой/малформ id → синхронный InvalidArgument первым стейтментом
+// (парити с Get и region_id-веткой: format-check ДО записи LRO-строки — malformed-id
+// не должен персистить spurious operation и уходить в UPDATE → async NotFound).
+// Пустые regionID/name и unspecified-status НЕ меняют поле (nil → COALESCE в repo).
+// not-found/конфликт → Operation.error.
 func (u *UseCase) Update(ctx context.Context, id, regionID, name string, st domain.ZoneStatus) (*operations.Operation, error) {
-	if id == "" {
-		return nil, geoerrors.ErrInvalidArg
+	if err := domain.ValidateID("zone id", id); err != nil {
+		return nil, fmt.Errorf("%w: %s", geoerrors.ErrInvalidArg, err.Error())
 	}
 	var p UpdateParams
 	if regionID != "" {
@@ -201,11 +203,12 @@ func (u *UseCase) Update(ctx context.Context, id, regionID, name string, st doma
 }
 
 // Delete принимает запрос на удаление Zone (admin-only) и возвращает Operation.
-// Пустой id → синхронный InvalidArgument. not-found → Operation.error NotFound.
+// Пустой/малформ id → синхронный InvalidArgument первым стейтментом (парити с Get:
+// format-check ДО записи LRO-строки). not-found → Operation.error NotFound.
 // Успех → response=Empty.
 func (u *UseCase) Delete(ctx context.Context, id string) (*operations.Operation, error) {
-	if id == "" {
-		return nil, geoerrors.ErrInvalidArg
+	if err := domain.ValidateID("zone id", id); err != nil {
+		return nil, fmt.Errorf("%w: %s", geoerrors.ErrInvalidArg, err.Error())
 	}
 	op, err := operations.NewFromContext(ctx, lro.OperationPrefix,
 		fmt.Sprintf("Delete zone %s", id),

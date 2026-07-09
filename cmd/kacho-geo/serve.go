@@ -238,16 +238,32 @@ func runServe(cfg config.Config) error {
 	// ctx.Done() — не требует отдельного drain'а.
 	go lroReconciler.Run(ctx)
 
-	go func() {
-		if serr := internalSrv.Serve(internalListener); serr != nil && !errors.Is(serr, grpc.ErrServerStopped) {
-			logger.Error("internal grpc server stopped", "err", serr)
-		}
-	}()
+	go runInternalListener(internalSrv, internalListener, cancel, logger)
 
 	serveErr := grpcSrv.Serve(listener)
 	cancel()
 	<-shutdownDone
 	return serveErr
+}
+
+// gracefulServer — минимальный контракт grpc-сервера, нужный runInternalListener
+// (только Serve). Позволяет тестировать teardown-семантику без реального listen'а.
+type gracefulServer interface {
+	Serve(net.Listener) error
+}
+
+// runInternalListener обслуживает internal :9091 gRPC-сервер и зеркалит lifecycle
+// public-листенера: фатальная (любая, кроме graceful grpc.ErrServerStopped) ошибка
+// Serve сносит ВЕСЬ процесс через cancel() root-ctx (симметрично public-пути
+// serve→cancel). Иначе admin-плоскость (InternalRegion/ZoneService, весь admin-CRUD)
+// молча ложится, процесс остаётся «здоровым» на public :9090 без non-zero exit —
+// оркестратор не рестартит, admin-плоскость тихо недоступна. graceful-stop
+// (ErrServerStopped, штатный GracefulStop) фатальным НЕ считается.
+func runInternalListener(srv gracefulServer, lis net.Listener, cancel context.CancelFunc, logger *slog.Logger) {
+	if serr := srv.Serve(lis); serr != nil && !errors.Is(serr, grpc.ErrServerStopped) {
+		logger.Error("internal grpc server stopped; tearing down process", "err", serr)
+		cancel()
+	}
 }
 
 // validateAuthMode разбирает KACHO_GEO_AUTH_MODE (whitelist) и строгость DB-SSL.
