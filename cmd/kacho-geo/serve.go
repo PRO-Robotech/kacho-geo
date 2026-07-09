@@ -238,12 +238,35 @@ func runServe(cfg config.Config) error {
 	// ctx.Done() — не требует отдельного drain'а.
 	go lroReconciler.Run(ctx)
 
-	go runInternalListener(internalSrv, internalListener, cancel, logger)
+	// Ошибка internal-листенера захватывается (buffered chan) и учитывается в
+	// exit-коде наравне с public: при фатальном крахе internal-листенера он зовёт
+	// cancel(), shutdown-горутина делает grpcSrv.GracefulStop(), после чего
+	// grpcSrv.Serve() по контракту grpc-go возвращает nil — если бы exit считался
+	// только по public-ошибке, крах :9091 дал бы exit 0 (оркестратор не рестартит,
+	// admin-плоскость тихо недоступна). serveResult ниже сводит обе ошибки.
+	internalErrCh := make(chan error, 1)
+	go func() {
+		internalErrCh <- runInternalListener(internalSrv, internalListener, cancel, logger)
+	}()
 
 	serveErr := grpcSrv.Serve(listener)
 	cancel()
 	<-shutdownDone
-	return serveErr
+	// internal-горутина разблокируется, когда её Serve вернётся (GracefulStop в
+	// shutdown-горутине выше отработал до close(shutdownDone)).
+	return serveResult(serveErr, <-internalErrCh)
+}
+
+// serveResult сводит exit-ошибку процесса из ошибок обоих листенеров: ошибка
+// public-листенера приоритетна (первичный сигнал отказа edge-поверхности);
+// иначе наверх идёт фатальная ошибка internal-листенера — чтобы её крах тоже дал
+// non-zero exit (симметрия: public-путь возвращает свою Serve-ошибку, internal
+// не должен глотаться после того как cancel()→GracefulStop обнулил public-ошибку).
+func serveResult(publicErr, internalErr error) error {
+	if publicErr != nil {
+		return publicErr
+	}
+	return internalErr
 }
 
 // gracefulServer — минимальный контракт grpc-сервера, нужный runInternalListener
@@ -255,15 +278,19 @@ type gracefulServer interface {
 // runInternalListener обслуживает internal :9091 gRPC-сервер и зеркалит lifecycle
 // public-листенера: фатальная (любая, кроме graceful grpc.ErrServerStopped) ошибка
 // Serve сносит ВЕСЬ процесс через cancel() root-ctx (симметрично public-пути
-// serve→cancel). Иначе admin-плоскость (InternalRegion/ZoneService, весь admin-CRUD)
-// молча ложится, процесс остаётся «здоровым» на public :9090 без non-zero exit —
-// оркестратор не рестартит, admin-плоскость тихо недоступна. graceful-stop
-// (ErrServerStopped, штатный GracefulStop) фатальным НЕ считается.
-func runInternalListener(srv gracefulServer, lis net.Listener, cancel context.CancelFunc, logger *slog.Logger) {
+// serve→cancel) И ВОЗВРАЩАЕТСЯ вызывающему. Возврат обязателен: после cancel()
+// shutdown-горутина делает grpcSrv.GracefulStop() → public grpcSrv.Serve() отдаёт
+// nil, поэтому без проброса этой ошибки в exit-код (serveResult) крах :9091 дал бы
+// exit 0 — оркестратор не рестартит, admin-плоскость (InternalRegion/ZoneService,
+// весь admin-CRUD) тихо недоступна. graceful-stop (ErrServerStopped, штатный
+// GracefulStop) фатальным НЕ считается → возврат nil.
+func runInternalListener(srv gracefulServer, lis net.Listener, cancel context.CancelFunc, logger *slog.Logger) error {
 	if serr := srv.Serve(lis); serr != nil && !errors.Is(serr, grpc.ErrServerStopped) {
 		logger.Error("internal grpc server stopped; tearing down process", "err", serr)
 		cancel()
+		return serr
 	}
+	return nil
 }
 
 // validateAuthMode разбирает KACHO_GEO_AUTH_MODE (whitelist) и строгость DB-SSL.

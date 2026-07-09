@@ -47,9 +47,16 @@ func NewInterceptor(opts Options) (*authz.Interceptor, error) {
 	// конфига geo — corelib authz применяет свои дефолты (CheckTimeout→2s). Cache
 	// передаём ЯВНО как authz.NewCache(0): corelib резолвит ttl≤0 в свой дефолтный
 	// 5s positive-result-кеш (см. corelib authz/cache.go — кешируются только
-	// allowed=true; miss всегда безопасен, fallback на авторитетный Check; revoke
-	// инвалидируется через pg_notify). Держим на дефолтах намеренно: отдельных
-	// operator-knob'ов для них geo не заводит.
+	// allowed=true; miss всегда безопасен, fallback на авторитетный Check).
+	//
+	// ⚠ В geo кеш — TTL-ONLY (окно stale-allow ≤5s). Проактивная pg_notify-
+	// инвалидация (corelib authz/listen_invalidate.go → Cache.InvalidateBySubject)
+	// НЕ подключена и подключена быть не может: сигнал идёт по
+	// pg_notify('kacho_iam_subjects', …) из БД kacho-iam, а при database-per-service
+	// geo не имеет доступа к БД iam. Значит отозванный (revoked) subject остаётся
+	// авторизованным в geo до истечения TTL (≤5s) — сознательно принятый риск ради
+	// амортизации Check-нагрузки; окно узкое и ограничено positive-результатами.
+	// Держим на дефолтах намеренно: отдельных operator-knob'ов для них geo не заводит.
 	return authz.NewInterceptor(authz.InterceptorOptions{
 		ServiceName: opts.ServiceName,
 		Map:         PermissionMap(),
